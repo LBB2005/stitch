@@ -51,8 +51,8 @@ struct JobResult: Sendable {
 enum Pipeline {
     // MARK: merge
 
-    /// Turns every file into a PDF Stitch can take pages from: PDFs as they are, images and Office files
-    /// converted into the work folder. Files that can't be used are in `skipped`, as "name (reason)".
+    /// Turns every file into a PDF Stitch can take pages from: PDFs as they are, images, CSVs and Office
+    /// files converted into the work folder. Files that can't be used are in `skipped`, as "name (reason)".
     static func prepare(_ files: [InputFile], workDir: URL, progress: ProgressHandler) async throws
         -> (prepared: [UUID: PreparedFile], skipped: [UUID: String]) {
         var prepared: [UUID: PreparedFile] = [:]
@@ -68,12 +68,15 @@ enum Pipeline {
                 case .image:
                     url = workDir.appendingPathComponent("image-\(file.id.uuidString).pdf")
                     try ImageConverter.writePDF(images: [file.url], to: url)
-                case .word, .powerpoint:
+                case .csv:
+                    url = workDir.appendingPathComponent("csv-\(file.id.uuidString).pdf")
+                    try CSVConverter.writePDF(from: file.url, to: url)
+                case .word, .powerpoint, .excel:
                     guard OfficeConverter.isInstalled else {
                         skipped[file.id] = "\(file.name) (needs LibreOffice)"
                         continue
                     }
-                    url = try await OfficeConverter.convert(file.url, workDir: workDir)
+                    url = try await OfficeConverter.convert(file.url, workDir: workDir, fitSheetsToWidth: file.kind == .excel)
                 }
                 let doc = try PDFTools.open(url, name: file.name)
                 guard doc.pageCount > 0 else {
@@ -261,6 +264,7 @@ enum Pipeline {
     static func reason(_ error: Error) -> String {
         if let pdf = error as? PDFTools.Failure, case .locked = pdf { return "password-protected" }
         if error is OfficeConverter.Failure { return "LibreOffice couldn't convert it" }
+        if let csv = error as? CSVConverter.Failure, case .empty = csv { return "no rows" }
         return "couldn't be read"
     }
 }

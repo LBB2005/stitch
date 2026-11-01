@@ -9,9 +9,13 @@ enum FileKind: Sendable, Equatable {
     case image(jpeg: Bool)
     case word
     case powerpoint
+    case excel
+    case csv
 
     static let wordExtensions: Set<String> = ["doc", "docx", "docm", "dot", "dotx", "odt", "rtf"]
     static let powerpointExtensions: Set<String> = ["ppt", "pptx", "pptm", "pps", "ppsx", "odp"]
+    static let excelExtensions: Set<String> = ["xls", "xlsx", "xlsm", "xlsb", "xltx", "ods"]
+    static let csvExtensions: Set<String> = ["csv", "tsv", "tab"]
 
     /// Image types ImageIO can decode on this Mac (HEIC, JPEG, PNG, TIFF, WebP, …).
     private static let readableImageTypes: Set<String> = {
@@ -23,6 +27,8 @@ enum FileKind: Sendable, Equatable {
         let ext = url.pathExtension.lowercased()
         if wordExtensions.contains(ext) { return .word }
         if powerpointExtensions.contains(ext) { return .powerpoint }
+        if excelExtensions.contains(ext) { return .excel }
+        if csvExtensions.contains(ext) { return .csv }
         guard let type = UTType(filenameExtension: ext) else { return nil }
         if type.conforms(to: .pdf) { return .pdf }
         if type.conforms(to: .image), readableImageTypes.contains(type.identifier) {
@@ -33,12 +39,14 @@ enum FileKind: Sendable, Equatable {
 
     /// Every type the Choose Files… picker offers.
     static var pickerTypes: [UTType] {
-        let office = (wordExtensions.union(powerpointExtensions)).compactMap { UTType(filenameExtension: $0) }
+        let office = wordExtensions.union(powerpointExtensions).union(excelExtensions).union(csvExtensions)
+            .compactMap { UTType(filenameExtension: $0) }
         return [.pdf, .image] + office
     }
 
     var isImage: Bool { if case .image = self { true } else { false } }
-    var isOffice: Bool { self == .word || self == .powerpoint }
+    /// Needs LibreOffice. CSV doesn't: Stitch draws those tables itself.
+    var isOffice: Bool { self == .word || self == .powerpoint || self == .excel }
     var isPDF: Bool { self == .pdf }
 }
 

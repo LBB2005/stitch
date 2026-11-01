@@ -42,7 +42,7 @@ struct SettingsView: View {
                 }
             }
             Well(padding: 0) {
-                SettingRow(symbol: "doc.richtext", title: "Word & PowerPoint") {
+                SettingRow(symbol: "doc.richtext", title: "Word, PowerPoint & Excel") {
                     if OfficeConverter.isInstalled {
                         Label("LibreOffice ready", systemImage: "checkmark.circle.fill")
                             .font(.system(size: 11))

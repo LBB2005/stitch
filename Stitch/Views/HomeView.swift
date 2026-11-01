@@ -76,7 +76,7 @@ struct DropZone: View {
                 .frame(height: 38)
             Text(active ? releaseText : "Drop files here")
                 .font(.system(size: 15, weight: .semibold))
-            Text("PDF · HEIC · JPEG · PNG · Word · PowerPoint")
+            Text("PDF · HEIC · JPEG · PNG · Word · PowerPoint · Excel · CSV")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
         }
@@ -132,7 +132,7 @@ private struct FilesHome: View {
                 }
                 .buttonStyle(PrimaryButtonStyle())
                 .disabled(!model.canMerge)
-                .help(model.canMerge ? "Arrange the pages, then merge into one PDF" : "Install LibreOffice to merge Word and PowerPoint files")
+                .help(model.canMerge ? "Arrange the pages, then merge into one PDF" : "Install LibreOffice to merge Word, PowerPoint and Excel files")
                 HStack(spacing: 8) {
                     Button("Convert to PDF") { model.convertToPDF() }
                         .buttonStyle(SecondaryButtonStyle())
@@ -263,8 +263,10 @@ private struct FileRow: View {
             return ("\(size) · \(n) page\(n == 1 ? "" : "s")", false)
         case .image:
             return ("\(size) · \(file.url.pathExtension.uppercased()) image", false)
-        case .word, .powerpoint:
-            let app = file.kind == .word ? "Word" : "PowerPoint"
+        case .csv:
+            return ("\(size) · \(file.url.pathExtension.uppercased())", false)
+        case .word, .powerpoint, .excel:
+            let app = switch file.kind { case .word: "Word"; case .powerpoint: "PowerPoint"; default: "Excel" }
             return OfficeConverter.isInstalled ? ("\(size) · \(app)", false) : ("\(app) · needs LibreOffice", true)
         }
     }
@@ -307,7 +309,7 @@ struct BannerView: View {
             VStack(alignment: .leading, spacing: 4) {
                 switch banner {
                 case .libreOffice:
-                    Text("Word and PowerPoint files need LibreOffice (free). Until it's installed, they're skipped.")
+                    Text("Word, PowerPoint and Excel files need LibreOffice (free). Until it's installed, they're skipped.")
                     Text(OfficeConverter.brewCommand)
                         .font(.system(size: 11, design: .monospaced))
                         .textSelection(.enabled)

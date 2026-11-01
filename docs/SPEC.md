@@ -32,8 +32,10 @@ Once files are loaded, the panel shows the file list and action buttons. Only bu
 - Merge PDFs into one PDF
 - HEIC → JPEG (keep orientation, strip location data by default)
 - Images (HEIC, JPEG, PNG) → PDF, one image per page, page sized to the image
-- Mixed merge: PDFs + images + Word/PowerPoint into one PDF
+- Mixed merge: PDFs + images + Word/PowerPoint/Excel + CSV into one PDF
   - macOS has no built-in Office-to-PDF converter. Use LibreOffice in headless mode (`soffice --headless --convert-to pdf`) if installed; if not, show a one-time message explaining how to install it, and skip those files rather than failing the whole merge.
+  - Excel (`.xlsx`, `.xls`, `.xlsm`, `.xlsb`, `.xltx`, `.ods`): every sheet, in tab order, each printed one page wide (landscape when wider than a portrait page) so columns never spill onto separate pages. `--convert-to` can't do this, so a small LibreOffice Python macro in Stitch's own LibreOffice profile sets each sheet's page style and exports; if it fails, fall back to the workbook's own print layout.
+  - CSV/TSV: Stitch draws the table itself (no LibreOffice needed). First row is the header, repeated on every page. Columns always fit the page width: portrait if they fit, else landscape with text shrunk as needed (9 pt → never below 6 pt), then the widest columns wrap. Numeric columns are right-aligned. Delimiter detected (comma, semicolon, tab, Excel's `sep=` line); UTF-8/UTF-16 with BOM, else Windows Latin 1. Real text, so AI chats can read it.
 
 ## Reorder before merging
 - Before a merge, show a grid of page thumbnails (one tile per file, expandable to individual pages)
