@@ -1,6 +1,8 @@
 #!/bin/zsh
-# Debug-build screenshots of each panel screen: scripts/shot.sh <screen> [light|dark] [out.png]
-# Screens: empty, drop, files, arrange, done, settings. Needs Screen Recording permission for the terminal.
+# Debug-build screenshots: scripts/shot.sh <screen> [light|dark] [out.png]
+# Panel screens: empty, drop, files, arrange, done, settings.
+# Window screens: app (the Stitch window), document (a signed sample lease), form, appsettings.
+# Needs Screen Recording permission for the terminal.
 set -euo pipefail
 cd "${0:A:h}/.."
 screen=${1:-files}; mode=${2:-light}; out=${3:-build/shots/$screen-$mode.png}
@@ -10,9 +12,10 @@ pkill -x Stitch 2>/dev/null || true
 sleep 1.5
 open "$app" --args -StitchDemo "$screen" -StitchDemoAppearance "$mode"
 sleep ${SHOT_DELAY:-3}
+case $screen in app|document|form|appsettings) layer='== 0' ;; *) layer='> 20' ;; esac
 id=""
 for _ in 1 2 3 4 5; do
-  id=$(swift -e 'import CoreGraphics; let l = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as! [[String: Any]]; for w in l where (w["kCGWindowOwnerName"] as? String) == "Stitch" && (w["kCGWindowLayer"] as? Int ?? 0) > 20 { print(w["kCGWindowNumber"]!); break }')
+  id=$(swift -e 'import CoreGraphics; let l = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as! [[String: Any]]; for w in l where (w["kCGWindowOwnerName"] as? String) == "Stitch" && (w["kCGWindowLayer"] as? Int ?? 0) '"$layer"' && ((w["kCGWindowBounds"] as? [String: Any])?["Height"] as? Double ?? 0) > 100 { print(w["kCGWindowNumber"]!); break }')
   [[ -n $id ]] && break
   sleep 1
 done

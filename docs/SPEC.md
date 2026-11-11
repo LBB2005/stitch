@@ -76,10 +76,10 @@ Once files are loaded, the panel shows the file list and action buttons. Only bu
 - Launch at login
 
 ## Out of scope for v1
-- Finder right-click Quick Actions and keyboard shortcut (good v2 additions)
+- Finder right-click Quick Actions and keyboard shortcut → moved into Part 2 (Finder Open With / Services, Insert-menu shortcuts)
 - Copy-to-clipboard for pasting into AI (drag-out covers this)
-- Recent files list, watch folder
-- Splitting PDFs, rotating pages
+- Recent files list → moved into Part 2 (Recent PDFs in the Stitch window and File → Open Recent); watch folder still out
+- Splitting PDFs, rotating pages → Part 2 "later versions" (page tools)
 - App Store / sharing with others
 
 ## UI design — Direction A: Compact native popover
@@ -115,3 +115,22 @@ Mockups: https://claude.ai/artifact/CgqFda3vKZaizMbGhpt31a (artboard A, light an
 6. OCR
 7. Word/PowerPoint via LibreOffice
 8. Settings + polish
+
+---
+
+# Part 2: Stitch as an app — Sign & Edit
+
+Full plan and the decisions behind it: `docs/SIGN-AND-EDIT-PLAN.md`. Summary of what is built:
+
+- **The menu bar icon and panel are unchanged.** Everything new lives in real windows; the panel only gains two right-click menu items (Open Stitch Window, Open PDF to Sign or Edit…).
+- **Stitch window.** Opening Stitch by hand (Dock, Applications, Spotlight) shows it: *Sign & Edit a PDF* (Open PDF… or drop PDFs), *Merge & Convert* (choose or drop files; they go to the menu bar panel, which does the job as before), and Recent PDFs. Launched at login or to open a file, Stitch stays in the menu bar.
+- **Dock icon.** Stitch is `.regular` (Dock icon, menu bar menus) while any Stitch window is open and `.accessory` again when the last one closes.
+- **Document windows.** One window, each PDF a native tab, one slim `.unifiedCompact` toolbar: zoom, Edit Text, Text, Date, Sign ▾, My Info ▾, Save Copy.
+- **Signing.** Signature and initials, drawn (mouse or a finger on the trackpad) or typed in a macOS script font, stored as vectors in the login Keychain. Touch ID (or the Mac password) before each placement; optional 5-minute grace in Settings. Placed where you last clicked; drag to move, corner handles resize (keeps its shape), Delete removes, arrows nudge.
+- **Text and dates.** Text boxes (size, bold, black/blue/red, optional white background to cover and retype on scans); today's date in the format chosen in Settings.
+- **Forms and auto-fill.** Type into the PDF's own fields. *My Info → Fill Matching Fields* matches field names to your profile (name, email, phone, student ID, date of birth, several labelled addresses) and asks which address when there are several. Fields about other people (emergency contact, parent, employer…) are never filled. Profile stored in the Keychain; Touch ID before showing or using it.
+- **Edit existing text.** Edit Text mode: hover shows the paragraph, click opens an editor in the closest installed font, size and color. MuPDF removes only that text (images and drawings stay) and the new text is stamped in place as real text. Longer text shrinks to at most 80%, then grows downward with a warning if it overlaps. Scanned pages say so and suggest a white text box.
+- **Saving.** Save Copy (⌘S) always writes a new file next to the original: `Lease_signed.pdf` when anything signed is on it, else `Lease_edited.pdf`, adding ` (2)` instead of overwriting. Later saves in the same tab update that copy. Unwritable folders (Mail attachments, read-only disks) fall back to the panel's save folder (Downloads). Save Copy As… (⇧⌘S) picks any name except the original. Closing or quitting with changes asks Save Copy / Don't Save / Cancel.
+- **Opening from everywhere.** Open… (⌘O), Open Recent, the Stitch window, Finder Open With, double-click once Stitch is the default PDF app (Settings), Finder → Services → *Sign or Edit with Stitch*, a drop on the Dock icon, the panel's right-click menu. Password-protected PDFs ask for the password. XFA forms and digitally signed PDFs show a warning banner.
+- **Shortcuts (Insert menu).** Signature ⌥⌘S, Initials ⌥⌘I, Date ⇧⌘D (⌥⌘D is macOS's Dock shortcut), Text Box ⌥⌘T, Fill My Info ⌥⌘F, Edit Text ⌥⌘E; zoom ⌘+ ⌘− ⌘0, Fit Width ⌘9; Stitch Window ⇧⌘1.
+- **Engine.** MuPDF 1.28.6 (git submodule `vendor/mupdf`, built statically by `scripts/build-mupdf.sh`), reached only through the C shim in `Stitch/Engine/MuPDF`. PDFKit still displays, scrolls, zooms, selects and runs form widgets. No network, no AI.

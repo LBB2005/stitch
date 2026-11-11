@@ -3,6 +3,7 @@
 # Usage: scripts/install.sh
 set -euo pipefail
 cd "${0:A:h}/.."
+scripts/build-mupdf.sh || exit 1
 xcodegen generate >/dev/null
 xcodebuild -scheme Stitch -configuration Release -destination 'platform=macOS' \
   -derivedDataPath build/DerivedData build | grep -E "error:|BUILD (SUCCEEDED|FAILED)"

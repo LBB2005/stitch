@@ -1,0 +1,4 @@
+module StitchMuPDF {
+    header "StitchMuPDF.h"
+    export *
+}
