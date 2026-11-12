@@ -60,6 +60,7 @@ targets:
         SWIFT_INCLUDE_PATHS: "$(SRCROOT)/Stitch/Engine/MuPDF"
         LIBRARY_SEARCH_PATHS: "$(SRCROOT)/build/mupdf/lib"
         OTHER_LDFLAGS: "-lmupdf -lmupdf-third"
+        ARCHS: arm64   # MuPDF is built for Apple silicon only; Release would otherwise also link x86_64
 
   StitchTests:
     type: bundle.unit-test
