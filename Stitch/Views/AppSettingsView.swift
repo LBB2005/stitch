@@ -18,14 +18,17 @@ enum SettingsOpener {
     static func open(tab: Tab) {
         state.tab = tab
         documents?.becomeApp()
+        // Something saved couldn't be read earlier (a Keychain prompt was denied): try again.
+        if SignatureStore.shared.problem != nil { SignatureStore.shared.reload() }
         if controller == nil, let prefs {
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 520),
-                                  styleMask: [.titled, .closable], backing: .buffered, defer: false)
+                                  styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
             window.title = "Stitch Settings"
             window.isRestorable = false
             window.tabbingMode = .disallowed
             window.contentView = NSHostingView(rootView: AppSettingsView()
                 .environment(prefs).environment(state).environment(SignatureStore.shared))
+            window.contentMinSize = NSSize(width: 520, height: 480)
             window.center()
             window.setFrameAutosaveName("StitchSettingsWindow")
             controller = NSWindowController(window: window)
@@ -45,7 +48,7 @@ struct AppSettingsView: View {
             YourInfoSettings().tabItem { Label("Your Info", systemImage: "person.text.rectangle") }.tag(SettingsOpener.Tab.yourInfo)
         }
         .padding(20)
-        .frame(width: 560, height: 520)
+        .frame(minWidth: 520, maxWidth: .infinity, minHeight: 480, maxHeight: .infinity)
     }
 }
 
@@ -84,6 +87,7 @@ private struct GeneralSettings: View {
                 Toggle("Don't ask for Touch ID again for 5 minutes", isOn: $prefs.touchIDGrace)
                     .onChange(of: prefs.touchIDGrace) { _, on in BiometricGate.graceSeconds = on ? 300 : 0 }
             }
+            YourDataSection()
             Section {
                 Text("Saving always makes a new file next to the original (Lease_signed.pdf or Lease_edited.pdf). The original is never written to. If that folder can't be written, copies go to \(FileManager.default.displayName(atPath: prefs.saveFolder.path)).")
                     .font(.caption)
@@ -105,11 +109,14 @@ private struct GeneralSettings: View {
 private struct SignatureSettings: View {
     @Environment(SignatureStore.self) private var store
     @State private var editing: Bool?   // nil: closed; false: signature; true: initials
+    @State private var error: String?
 
     var body: some View {
         Form {
+            if let problem = store.problem { ProblemNote(text: problem) }
             row(title: "Signature", sig: store.signature, initials: false)
             row(title: "Initials", sig: store.initials, initials: true)
+            if let error { Text(error).font(.caption).foregroundStyle(.red) }
             Text("Stored as vector strokes (or typed text) in your login Keychain, only on this Mac. Stitch asks for Touch ID before putting either on a page.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -117,9 +124,18 @@ private struct SignatureSettings: View {
         .formStyle(.grouped)
         .sheet(item: Binding(get: { editing.map(SheetID.init) }, set: { editing = $0?.initials })) { id in
             SignaturePad(initials: id.initials) { result in
-                if let result { try? store.setSignature(result, initials: id.initials) }
+                if let result { save(result, initials: id.initials) }
                 editing = nil
             }
+        }
+    }
+
+    private func save(_ value: Signature?, initials: Bool) {
+        do {
+            try store.setSignature(value, initials: initials)
+            error = nil
+        } catch {
+            self.error = error.localizedDescription
         }
     }
 
@@ -135,7 +151,7 @@ private struct SignatureSettings: View {
                     SignaturePreview(signature: sig)
                         .frame(width: 140, height: 44)
                     Button("Change…") { editing = initials }
-                    Button("Delete", role: .destructive) { try? store.setSignature(nil, initials: initials) }
+                    Button("Delete", role: .destructive) { save(nil, initials: initials) }
                 } else {
                     Text("None").foregroundStyle(.secondary)
                     Button("Create…") { editing = initials }
@@ -172,6 +188,7 @@ private struct YourInfoSettings: View {
         Group {
             if unlocked {
                 Form {
+                    if let problem = store.problem { ProblemNote(text: problem) }
                     Section("You") {
                         TextField("First name", text: $draft.firstName)
                         TextField("Last name", text: $draft.lastName)
@@ -213,15 +230,8 @@ private struct YourInfoSettings: View {
                 .safeAreaInset(edge: .bottom) {
                     HStack {
                         Spacer()
-                        Button("Save") {
-                            do {
-                                try store.setProfile(draft)
-                                saved = true
-                                error = nil
-                            } catch {
-                                self.error = error.localizedDescription
-                            }
-                        }
+                        if !saved { Text("Saves when you close Settings").font(.caption).foregroundStyle(.secondary) }
+                        Button("Save") { save() }
                         .keyboardShortcut("s")
                         .disabled(saved)
                     }
@@ -237,6 +247,24 @@ private struct YourInfoSettings: View {
             }
         }
         .onAppear { if !unlocked { unlock() } }
+        // Closing Settings or switching tabs never throws away typed details.
+        .onDisappear { if unlocked, !saved { save() } }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { note in
+            if (note.object as? NSWindow)?.title == "Stitch Settings", unlocked, !saved { save() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+            if unlocked, !saved { save() }
+        }
+    }
+
+    private func save() {
+        do {
+            try store.setProfile(draft)
+            saved = true
+            error = nil
+        } catch {
+            self.error = error.localizedDescription
+        }
     }
 
     private func unlock() {
@@ -247,6 +275,46 @@ private struct YourInfoSettings: View {
                 saved = true
             }
         }
+    }
+}
+
+/// Where Stitch keeps your things, and a way to remove them.
+private struct YourDataSection: View {
+    @Environment(SignatureStore.self) private var store
+    @State private var confirming = false
+    @State private var done = false
+
+    var body: some View {
+        Section("Your Data") {
+            Text("Your signature, initials and details are in your login Keychain; settings and recent files are in Stitch's preferences. All of it belongs to your user account on this Mac only: other people who log in to this Mac can't see it, and it's never synced or uploaded.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack {
+                if done { Label("Removed", systemImage: "checkmark.circle.fill").foregroundStyle(.secondary) }
+                Spacer()
+                Button("Delete My Signature, Info and Recents…", role: .destructive) { confirming = true }
+            }
+        }
+        .confirmationDialog("Delete your saved signature, initials, details and recent files list?",
+                            isPresented: $confirming) {
+            Button("Delete", role: .destructive) {
+                store.deleteAll()
+                SettingsOpener.documents?.clearRecents()
+                done = true
+            }
+        } message: {
+            Text("This can't be undone. PDFs you saved stay where they are.")
+        }
+    }
+}
+
+/// A saved item that couldn't be read.
+private struct ProblemNote: View {
+    let text: String
+    var body: some View {
+        Label(text, systemImage: "exclamationmark.triangle.fill")
+            .font(.caption)
+            .foregroundStyle(.orange)
     }
 }
 

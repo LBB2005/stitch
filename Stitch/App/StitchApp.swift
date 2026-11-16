@@ -162,7 +162,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard !Self.isTesting else { return }
-        Workspace.clearAll()
+        Workspace.clearLeftovers()
         let panel = PanelController(model: model)
         panel.onOpenApp = { [documents] in documents.showHome() }
         panel.onOpenPDF = { [documents] in documents.showOpenPanel() }

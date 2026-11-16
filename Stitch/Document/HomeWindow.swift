@@ -12,7 +12,7 @@ final class HomeWindowController: NSWindowController, NSWindowDelegate {
     init(documents: DocumentController, model: AppModel) {
         self.documents = documents
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 560),
-                              styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView],
+                              styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                               backing: .buffered, defer: false)
         window.title = "Stitch"
         window.titlebarAppearsTransparent = true
@@ -29,6 +29,7 @@ final class HomeWindowController: NSWindowController, NSWindowDelegate {
             .environment(SignatureStore.shared)
         window.contentView = NSHostingView(rootView: root)
         window.setContentSize(NSSize(width: 720, height: 560))
+        window.contentMinSize = NSSize(width: 640, height: 500)
         window.center()
         window.setFrameAutosaveName("StitchHomeWindow")
     }
@@ -83,12 +84,19 @@ struct HomeWindowView: View {
             RecentStrip(documents: documents)
             Spacer(minLength: 0)
             HStack(spacing: 6) {
-                Image(systemName: store.signature == nil ? "signature" : "checkmark.seal")
-                    .foregroundStyle(.secondary)
-                Text(store.signature == nil ? "No signature saved yet" : "Signature saved on this Mac")
-                    .foregroundStyle(.secondary)
-                Button(store.signature == nil ? "Create one…" : "Change…") { SettingsOpener.open(tab: .signatures) }
-                    .buttonStyle(LinkButtonStyle())
+                if store.problem != nil {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                    Text("Couldn't read your saved signature or details").foregroundStyle(.secondary)
+                    Button("Details…") { SettingsOpener.open(tab: .signatures) }
+                        .buttonStyle(LinkButtonStyle())
+                } else {
+                    Image(systemName: store.signature == nil ? "signature" : "checkmark.seal")
+                        .foregroundStyle(.secondary)
+                    Text(store.signature == nil ? "No signature saved yet" : "Signature saved on this Mac")
+                        .foregroundStyle(.secondary)
+                    Button(store.signature == nil ? "Create one…" : "Change…") { SettingsOpener.open(tab: .signatures) }
+                        .buttonStyle(LinkButtonStyle())
+                }
                 Spacer()
                 Text("The menu bar icon still takes drops, as always.")
                     .foregroundStyle(.tertiary)
@@ -98,7 +106,7 @@ struct HomeWindowView: View {
         .padding(.horizontal, 28)
         .padding(.top, 26)
         .padding(.bottom, 18)
-        .frame(width: 720, height: 560)
+        .frame(minWidth: 640, maxWidth: .infinity, minHeight: 500, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
     }
 

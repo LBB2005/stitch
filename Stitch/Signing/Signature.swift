@@ -122,3 +122,16 @@ struct Signature: Codable, Equatable, Sendable {
         CTLineGetBoundsWithOptions(line(text, fontName: fontName, size: size, color: ink), .useGlyphPathBounds)
     }
 }
+
+extension Signature {
+    /// Missing fields take sensible defaults, so saves from other versions of Stitch still load.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        strokes = try c.lenient(.strokes, [])
+        text = try c.lenient(.text, "")
+        fontName = try c.lenient(.fontName, "")
+        style = try c.lenient(.style, text.isEmpty ? .drawn : .typed)
+        aspect = try c.lenient(.aspect, 1)
+        inkWidth = try c.lenient(.inkWidth, 0.03)
+    }
+}

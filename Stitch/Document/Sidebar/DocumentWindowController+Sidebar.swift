@@ -232,6 +232,13 @@ extension DocumentWindowController {
             if let page, let point { placeTextBox(page: page, at: point) } else { startTextBox() }
         case .signature, .initials:
             let initials = item == .initials
+            if (initials ? SignatureStore.shared.initials : SignatureStore.shared.signature) == nil,
+               SignatureStore.shared.problem != nil {
+                // It may be saved but unreadable right now (a denied Keychain prompt): ask again before
+                // offering to make a new one over it.
+                SignatureStore.shared.reload()
+                if let problem = SignatureStore.shared.problem { return showToast(problem) }
+            }
             guard let sig = initials ? SignatureStore.shared.initials : SignatureStore.shared.signature else {
                 return createSignature(initials: initials, thenPlace: page == nil && spot == nil)
             }

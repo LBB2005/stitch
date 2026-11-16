@@ -87,3 +87,39 @@ enum ProfileItem: String, CaseIterable, Sendable {
         }
     }
 }
+
+// Fields missing from older saves (or added later) fall back to their defaults instead of failing the
+// whole decode, so a Stitch update never makes your saved details unreadable.
+extension Profile {
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        firstName = try c.lenient(.firstName, "")
+        lastName = try c.lenient(.lastName, "")
+        email = try c.lenient(.email, "")
+        phone = try c.lenient(.phone, "")
+        studentID = try c.lenient(.studentID, "")
+        dateOfBirth = try c.lenient(.dateOfBirth, "")
+        addresses = try c.lenient(.addresses, [])
+    }
+}
+
+extension Profile.Address {
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.lenient(.id, UUID())
+        label = try c.lenient(.label, "Home")
+        street = try c.lenient(.street, "")
+        street2 = try c.lenient(.street2, "")
+        city = try c.lenient(.city, "")
+        state = try c.lenient(.state, "")
+        zip = try c.lenient(.zip, "")
+        country = try c.lenient(.country, "")
+    }
+}
+
+extension KeyedDecodingContainer {
+    /// The value for `key`, or `fallback` when it's absent or null. A present value of the wrong type still throws.
+    func lenient<T: Decodable>(_ key: Key, _ fallback: @autoclosure () -> T) throws -> T {
+        try decodeIfPresent(T.self, forKey: key) ?? fallback()
+    }
+}
