@@ -17,10 +17,18 @@ enum FileKind: Sendable, Equatable {
     static let excelExtensions: Set<String> = ["xls", "xlsx", "xlsm", "xlsb", "xltx", "ods"]
     static let csvExtensions: Set<String> = ["csv", "tsv", "tab"]
 
-    /// Image types ImageIO can decode on this Mac (HEIC, JPEG, PNG, TIFF, WebP, …).
+    /// Everyday photo and screenshot formats, plus camera RAW. Rarer formats ImageIO also decodes (PSD,
+    /// TGA, OpenEXR, PBM, JPEG 2000…) are left out: less decoder code reachable from a file someone sends you.
+    static let allowedImageTypes: [UTType] = [.jpeg, .png, .heic, .heif, .tiff, .webP, .gif, .bmp,
+                                              UTType("public.avif"), UTType("public.camera-raw-image")].compactMap { $0 }
+
+    /// Of those, the ones ImageIO can decode on this Mac.
     private static let readableImageTypes: Set<String> = {
         let ids = CGImageSourceCopyTypeIdentifiers() as? [String] ?? []
-        return Set(ids)
+        return Set(ids.filter { id in
+            guard let type = UTType(id) else { return false }
+            return allowedImageTypes.contains { type.conforms(to: $0) }
+        })
     }()
 
     static func classify(_ url: URL) -> FileKind? {
@@ -41,7 +49,7 @@ enum FileKind: Sendable, Equatable {
     static var pickerTypes: [UTType] {
         let office = wordExtensions.union(powerpointExtensions).union(excelExtensions).union(csvExtensions)
             .compactMap { UTType(filenameExtension: $0) }
-        return [.pdf, .image] + office
+        return [.pdf] + allowedImageTypes + office
     }
 
     var isImage: Bool { if case .image = self { true } else { false } }

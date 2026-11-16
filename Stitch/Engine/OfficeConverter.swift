@@ -52,15 +52,15 @@ enum OfficeConverter {
         let copy = dir.appendingPathComponent(src.lastPathComponent)
         try FileManager.default.copyItem(at: src, to: copy)
         let out = dir.appendingPathComponent(copy.deletingPathExtension().lastPathComponent + ".pdf")
+        try? lockDownProfile()
         let common = ["-env:UserInstallation=\(profileURL.absoluteString)",
                       "--headless", "--norestore", "--nologo", "--nodefault", "--nolockcheck"]
 
         if fitSheetsToWidth, (try? installFitScript()) != nil {
             let process = Process()
-            process.executableURL = soffice
-            process.arguments = common + ["vnd.sun.star.script:\(fitScriptName)$fit_to_width?language=Python&location=user"]
-            process.environment = ProcessInfo.processInfo.environment.merging(
-                ["STITCH_SRC": copy.path, "STITCH_OUT": out.path]) { $1 }
+            confine(process, soffice: soffice,
+                    arguments: common + ["vnd.sun.star.script:\(fitScriptName)$fit_to_width?language=Python&location=user"],
+                    extra: ["STITCH_SRC": copy.path, "STITCH_OUT": out.path])
             process.standardOutput = FileHandle.nullDevice
             process.standardError = FileHandle.nullDevice
             if try await run(ProcessBox(process), name: src.lastPathComponent),
@@ -70,8 +70,7 @@ enum OfficeConverter {
         }
 
         let process = Process()
-        process.executableURL = soffice
-        process.arguments = common + ["--convert-to", "pdf", "--outdir", dir.path, copy.path]
+        confine(process, soffice: soffice, arguments: common + ["--convert-to", "pdf", "--outdir", dir.path, copy.path])
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         let finished = try await run(ProcessBox(process), name: src.lastPathComponent)
@@ -79,6 +78,70 @@ enum OfficeConverter {
             throw Failure.failed(src.lastPathComponent)
         }
         return out
+    }
+
+    // MARK: keeping LibreOffice local and macro-free
+
+    /// Documents are someone else's files: LibreOffice runs with no internet access (no remote images,
+    /// links or WEBSERVICE() calls can phone home), only the environment it needs, and the profile set to
+    /// run no document macros and follow no untrusted links.
+    private static func confine(_ process: Process, soffice: URL, arguments: [String], extra: [String: String] = [:]) {
+        let sandbox = URL(fileURLWithPath: "/usr/bin/sandbox-exec")
+        if FileManager.default.isExecutableFile(atPath: sandbox.path) {
+            process.executableURL = sandbox
+            process.arguments = ["-p", noNetworkProfile, soffice.path] + arguments
+        } else {
+            process.executableURL = soffice
+            process.arguments = arguments
+        }
+        let env = ProcessInfo.processInfo.environment
+        var keep: [String: String] = [:]
+        for key in ["HOME", "USER", "LOGNAME", "PATH", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE"] {
+            if let value = env[key] { keep[key] = value }
+        }
+        process.environment = keep.merging(extra) { $1 }
+    }
+
+    /// Everything allowed except internet (IP) connections; local sockets LibreOffice uses for itself still work.
+    static let noNetworkProfile = "(version 1)(allow default)(deny network-outbound (remote ip))(deny network-inbound (local ip))"
+
+    /// Settings Stitch forces in its own LibreOffice profile, merged into `registrymodifications.xcu`.
+    static let lockedSettings: [(path: String, name: String, type: String, value: String)] = [
+        // Very high: document macros never run (Stitch's own script lives in the profile, a trusted place).
+        ("/org.openoffice.Office.Common/Security/Scripting", "MacroSecurityLevel", "int", "3"),
+        ("/org.openoffice.Office.Common/Security/Scripting", "BlockUntrustedRefererLinks", "boolean", "true"),
+    ]
+
+    private static func lockDownProfile() throws {
+        let dir = profileURL.appendingPathComponent("user", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let file = dir.appendingPathComponent("registrymodifications.xcu")
+        let existing = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
+        let merged = lockedRegistry(existing)
+        if merged != existing { try Data(merged.utf8).write(to: file, options: .atomic) }
+    }
+
+    /// `xcu` with Stitch's locked settings in it, replacing any older values for the same settings.
+    static func lockedRegistry(_ xcu: String) -> String {
+        let footer = "</oor:items>"
+        var text = xcu
+        if !text.contains(footer) {
+            text = """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <oor:items xmlns:oor="http://openoffice.org/2001/registry" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+                </oor:items>
+
+                """
+        }
+        var lines = text.components(separatedBy: "\n")
+        for s in lockedSettings {
+            lines.removeAll { $0.contains("oor:path=\"\(s.path)\"") && $0.contains("oor:name=\"\(s.name)\"") }
+        }
+        let items = lockedSettings.map { s in
+            "<item oor:path=\"\(s.path)\"><prop oor:name=\"\(s.name)\" oor:op=\"fuse\"><value>\(s.value)</value></prop></item>"
+        }
+        if let end = lines.lastIndex(where: { $0.contains(footer) }) { lines.insert(contentsOf: items, at: end) }
+        return lines.joined(separator: "\n")
     }
 
     // MARK: fitting sheets to the page width
@@ -104,7 +167,10 @@ enum OfficeConverter {
         def fit_to_width(*args):
             desktop = XSCRIPTCONTEXT.getDesktop()
             src, out = os.environ["STITCH_SRC"], os.environ["STITCH_OUT"]
-            doc = desktop.loadComponentFromURL(uno.systemPathToFileUrl(src), "_blank", 0, (_prop("Hidden", True),))
+            # Never run the workbook's own macros, never refresh its external links (both 0 = never).
+            doc = desktop.loadComponentFromURL(uno.systemPathToFileUrl(src), "_blank", 0,
+                                               (_prop("Hidden", True), _prop("MacroExecutionMode", 0),
+                                                _prop("UpdateDocMode", 0)))
             try:
                 styles = doc.StyleFamilies.getByName("PageStyles")
                 for sheet in doc.Sheets:

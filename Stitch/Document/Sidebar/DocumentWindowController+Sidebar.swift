@@ -143,12 +143,26 @@ extension DocumentWindowController {
 
     // MARK: Touch ID for the panels
 
-    /// Asks once; the panels then show their contents while this window is key.
+    /// Asks once; the panels then show their contents while this window is key, or, with the grace
+    /// setting on, until the grace period after that Touch ID runs out (wherever the window is).
     func reveal(_ reason: String) async -> Bool {
         if ui.revealed { return true }
         let ok = await BiometricGate.authorize(reason)
-        if ok { ui.revealed = true }
+        if ok {
+            ui.revealed = true
+            scheduleRelock()
+        }
         return ok
+    }
+
+    private func scheduleRelock() {
+        ui.relock?.cancel()
+        guard let left = BiometricGate.graceRemaining else { return }
+        ui.relock = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(left + 0.5))
+            guard !Task.isCancelled, let self, BiometricGate.graceRemaining == nil else { return }
+            ui.revealed = false
+        }
     }
 
     func revealSidebar(_ reason: String) {

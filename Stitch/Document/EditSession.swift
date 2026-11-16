@@ -25,6 +25,8 @@ final class EditSession {
     private(set) var formValues: [String: String] = [:]
     /// The copy this tab saved; later saves update it.
     private(set) var savedCopy: URL?
+    /// The file that save wrote, so a later save never replaces something else put at `savedCopy`.
+    private var savedCopyID: SaveCopy.FileID?
     private(set) var isRebuilding = false
     /// Every change, for the History panel; its cursor follows undo and redo.
     private(set) var history = HistoryLog()
@@ -350,12 +352,14 @@ final class EditSession {
                      protected: [URL] = []) -> SaveCopy.Request {
         SaveCopy.Request(original: original, password: password, textEdits: textEdits, formValues: formValues,
                          overlays: overlays, flatten: flatten, previousCopy: exactDestination == nil ? savedCopy : nil,
+                         previousCopyID: exactDestination == nil ? savedCopyID : nil,
                          exactDestination: exactDestination, protected: protected, fallbackFolder: fallbackFolder,
                          workDir: workDir)
     }
 
-    func didSave(to url: URL) {
+    func didSave(to url: URL, fileID: SaveCopy.FileID? = nil) {
         savedCopy = url
+        savedCopyID = fileID
         savedChangeCount = changeCount
         savedFormValues = formValues
         history.saved(url.lastPathComponent)

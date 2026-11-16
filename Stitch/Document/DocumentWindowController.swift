@@ -20,7 +20,7 @@ final class DocumentUI {
             switch self {
             case .xfa: "This form uses XFA, which Stitch can't fill. You can still add text boxes, dates and signatures."
             case .digitallySigned: "This PDF is digitally signed. Saving a changed copy makes that digital signature invalid."
-            case .scan: "This page is a scan, so it has no text to edit. Use a text box with a white background to cover and retype."
+            case .scan: "This page is a scan, so it has no text to edit. Use a text box with a white background to cover and retype: Save Copy removes what's under it."
             case .message(let s): s
             }
         }
@@ -54,8 +54,11 @@ final class DocumentUI {
     /// What Fill My Info would do, for the My Info panel.
     var fieldMatches: [AutoFill.FieldMatch] = []
     var addressIndex = 0
-    /// Touch ID passed in this window: the Sign and My Info panels show their contents.
+    /// Touch ID passed in this window: the Sign and My Info panels show their contents. Without the grace
+    /// setting it lasts while the window is in front; with it, until the grace period runs out.
     var revealed = false
+    /// Locks the panels again when the grace period ends.
+    @ObservationIgnored var relock: Task<Void, Never>?
     var find = FindState()
     /// Form fields typed into directly (PDFKit's own editing; not undo steps).
     var typedFields = 0
@@ -184,6 +187,8 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
         }
         session.onWorkingCopyChanged = { [weak self] url, pages in
             guard let self, let doc = PDFDocument(url: url) else { return }
+            // Working copies of a password-protected PDF keep its password.
+            if doc.isLocked, let pw = session.password { doc.unlock(withPassword: pw) }
             let form = currentForm()
             pdfView.replacePages(pages, from: doc, form: form)
             refreshDirty()
@@ -345,15 +350,26 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
         place(initials ? .initials : .signature)
     }
 
+    /// Makes a new signature or initials. Replacing a saved one asks for Touch ID first.
     func createSignature(initials: Bool, thenPlace: Bool = false) {
+        let saved = initials ? SignatureStore.shared.initials : SignatureStore.shared.signature
+        guard saved != nil else { return presentSignaturePad(initials: initials, thenPlace: thenPlace) }
+        Task {
+            guard await reveal(initials ? "change your initials" : "change your signature") else { return }
+            presentSignaturePad(initials: initials, thenPlace: thenPlace)
+        }
+    }
+
+    private func presentSignaturePad(initials: Bool, thenPlace: Bool) {
         guard let window else { return }
         let host = NSHostingController(rootView: AnyView(EmptyView()))
-        let pad = SignaturePad(initials: initials) { [weak self, weak window, weak host] result in
+        let name = ui.revealed ? SignatureStore.shared.profile.fullName : nil
+        let pad = SignaturePad(initials: initials, suggestedName: name) { [weak self, weak window, weak host] result in
             if let sheet = host?.view.window { window?.endSheet(sheet) }
             guard let self, let result else { return }
             do {
                 try SignatureStore.shared.setSignature(result, initials: initials)
-                self.ui.revealed = true
+                // No reveal here: making a signature mustn't unlock My Info. Placing asks for Touch ID.
                 if thenPlace { self.placeSignature(initials: initials) }
             } catch {
                 self.showToast("Couldn't save it in the Keychain: \(error.localizedDescription)")
@@ -442,7 +458,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
             }
             switch result {
             case .success(let outcome):
-                session.didSave(to: outcome.url)
+                session.didSave(to: outcome.url, fileID: outcome.fileID)
                 filledFields = []
                 baselineAfterSave()
                 documents?.noteRecent(outcome.url)

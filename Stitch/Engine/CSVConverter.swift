@@ -10,11 +10,13 @@ enum CSVConverter {
     enum Failure: LocalizedError {
         case unreadable(String)
         case empty(String)
+        case tooLarge(String)
 
         var errorDescription: String? {
             switch self {
             case .unreadable(let name): "Couldn't read \(name)."
             case .empty(let name): "\(name) has no rows."
+            case .tooLarge(let name): "\(name) is too big a table to turn into pages."
             }
         }
     }
@@ -26,12 +28,17 @@ enum CSVConverter {
     static let maxColumnWidth: CGFloat = 220
     /// Rows measured to find each column's natural width; enough to be representative, quick on big files.
     static let sampleRows = 1000
+    /// Rows × columns above this are refused: a file made of one very wide row and many short ones would
+    /// otherwise be padded out to billions of cells.
+    static let maxCells = 2_000_000
 
     static func writePDF(from src: URL, to dst: URL) throws {
         guard let data = try? Data(contentsOf: src), let text = decode(data) else {
             throw Failure.unreadable(src.lastPathComponent)
         }
-        let rows = clean(parse(text, delimiter: delimiter(for: src, text: text)))
+        let parsed = parse(text, delimiter: delimiter(for: src, text: text))
+        guard parsed.count * (parsed.map(\.count).max() ?? 0) <= maxCells else { throw Failure.tooLarge(src.lastPathComponent) }
+        let rows = clean(parsed)
         guard !rows.isEmpty else { throw Failure.empty(src.lastPathComponent) }
         try draw(Table(rows: rows), title: src.lastPathComponent, to: dst)
     }

@@ -27,6 +27,10 @@ extern "C" {
 #define SMU_FONT_SERIF 4
 #define SMU_FONT_MONO 8
 
+/// What `smu_redact` removes besides text.
+#define SMU_REDACT_IMAGES 1    // image pixels under the rectangles
+#define SMU_REDACT_LINE_ART 2  // drawings entirely under the rectangles
+
 #define SMU_DOC_HAS_XFA 1
 #define SMU_DOC_DIGITALLY_SIGNED 2
 
@@ -71,7 +75,8 @@ void smu_close(smu_doc *doc);
 
 int smu_page_count(smu_doc *doc);
 
-/// Writes the whole document to `path`, unencrypted, unused objects dropped.
+/// Writes the whole document to `path`, unused objects dropped. A PDF that was opened with a password
+/// keeps the same encryption and password; any other PDF is written unencrypted.
 int smu_save(smu_doc *doc, const char *path, char *err, int errlen);
 
 /// `ctm` (6 floats: a b c d e f) maps PDF user space to display space; `size` (2 floats) is the
@@ -84,6 +89,13 @@ int smu_page_chars(smu_doc *doc, int page, smu_char **chars, int *count, char *e
 /// Removes the text that touches any of the rectangles (display space, 4 floats each: x0 y0 x1 y1).
 /// Images and drawings are kept, and nothing is painted over the area.
 int smu_remove_text(smu_doc *doc, int page, const float *rects, int rect_count, char *err, int errlen);
+
+/// Like `smu_remove_text`, and with SMU_REDACT_* flags also blanks image pixels and removes drawings under
+/// the rectangles: what's covered is gone from the file, not just hidden.
+int smu_redact(smu_doc *doc, int page, const float *rects, int rect_count, int flags, char *err, int errlen);
+
+/// 1 when the PDF needed a password to open.
+int smu_is_encrypted(smu_doc *doc);
 
 /// Draws page 1 of the PDF at `stamp_path` onto `page` as a Form XObject. `matrix` (6 floats) maps the
 /// stamp's own coordinates (its media box) to the target page's PDF user space.

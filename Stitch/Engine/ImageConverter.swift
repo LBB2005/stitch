@@ -59,7 +59,17 @@ enum ImageConverter {
             tiff[kCGImagePropertyTIFFOrientation] = 1
             meta[kCGImagePropertyTIFFDictionary] = tiff
         }
-        if stripLocation { meta.removeValue(forKey: kCGImagePropertyGPSDictionary) }
+        if stripLocation {
+            meta.removeValue(forKey: kCGImagePropertyGPSDictionary)
+            // IPTC carries location as text too (city, area, country).
+            if var iptc = meta[kCGImagePropertyIPTCDictionary] as? [CFString: Any] {
+                for key in [kCGImagePropertyIPTCCity, kCGImagePropertyIPTCSubLocation, kCGImagePropertyIPTCProvinceState,
+                            kCGImagePropertyIPTCCountryPrimaryLocationName, kCGImagePropertyIPTCCountryPrimaryLocationCode] {
+                    iptc.removeValue(forKey: key)
+                }
+                meta[kCGImagePropertyIPTCDictionary] = iptc
+            }
+        }
         for key in [kCGImagePropertyPixelWidth, kCGImagePropertyPixelHeight, kCGImagePropertyHasAlpha,
                     kCGImagePropertyDepth, kCGImagePropertyPNGDictionary] {
             meta.removeValue(forKey: key)

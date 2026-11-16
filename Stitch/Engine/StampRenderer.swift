@@ -41,11 +41,16 @@ enum StampRenderer {
         }
     }
 
-    /// Stamps each overlay onto its page.
+    /// Stamps each overlay onto its page. A text box with a white background covers what's under it, so
+    /// that content (text, scan pixels, drawings) is removed from the file first, not just painted over.
     static func apply(_ overlays: [Overlay], to doc: MuPDFDocument, workDir: URL) throws {
         for overlay in overlays {
             try Task.checkCancellation()
             if case .text(let box) = overlay.kind, box.text.isEmpty, !box.whiteBackground { continue }
+            if case .text(let box) = overlay.kind, box.whiteBackground {
+                let info = try doc.pageInfo(overlay.page)
+                try doc.redact(onPage: overlay.page, in: [overlay.rect.applying(info.toDisplay)], images: true, lineArt: true)
+            }
             let url = workDir.appendingPathComponent("overlay-\(overlay.id.uuidString).pdf")
             try write(size: overlay.uprightSize, to: url) { overlay.drawContent(in: $0) }
             try doc.place(url, onPage: overlay.page,

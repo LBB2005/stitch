@@ -90,6 +90,9 @@ final class MuPDFDocument: @unchecked Sendable {
 
     var flags: Flags { Flags(rawValue: smu_doc_flags(handle)) }
 
+    /// True when the PDF needed a password to open. Saving keeps that password.
+    var isEncrypted: Bool { smu_is_encrypted(handle) != 0 }
+
     func save(to url: URL) throws {
         try call { err, len in url.path.withCString { smu_save(handle, $0, err, len) } }
     }
@@ -129,6 +132,15 @@ final class MuPDFDocument: @unchecked Sendable {
         guard !rects.isEmpty else { return }
         let flat = rects.flatMap { [Float($0.minX), Float($0.minY), Float($0.maxX), Float($0.maxY)] }
         try call { err, len in smu_remove_text(handle, Int32(page), flat, Int32(rects.count), err, len) }
+    }
+
+    /// Removes everything under these display-space rectangles: text, and image pixels and drawings when
+    /// asked. Used under opaque cover boxes, so what they hide is gone from the saved file.
+    func redact(onPage page: Int, in rects: [CGRect], images: Bool, lineArt: Bool) throws {
+        guard !rects.isEmpty else { return }
+        let flat = rects.flatMap { [Float($0.minX), Float($0.minY), Float($0.maxX), Float($0.maxY)] }
+        let flags = (images ? Int32(SMU_REDACT_IMAGES) : 0) | (lineArt ? Int32(SMU_REDACT_LINE_ART) : 0)
+        try call { err, len in smu_redact(handle, Int32(page), flat, Int32(rects.count), flags, err, len) }
     }
 
     /// Draws page 1 of `stamp` onto `page`; `transform` maps the stamp's coordinates to the page's user space.

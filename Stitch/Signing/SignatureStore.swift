@@ -192,9 +192,19 @@ enum BiometricGate {
     /// Within this many seconds of the last success, don't ask again (Settings → "Don't ask again for 5 minutes").
     static var graceSeconds: TimeInterval = 0
 
+    /// Seconds left before the grace period after the last Touch ID runs out (nil: none left, or no grace).
+    static var graceRemaining: TimeInterval? {
+        guard graceSeconds > 0, let last = lastSuccess else { return nil }
+        let left = graceSeconds - Date().timeIntervalSince(last)
+        return left > 0 ? left : nil
+    }
+
     static func authorize(_ reason: String) async -> Bool {
+        #if DEBUG
+        // Unit tests only. Compiled out of Release, so an environment variable can't skip Touch ID there.
         if AppDelegate.isTesting { return true }
-        if let last = lastSuccess, graceSeconds > 0, Date().timeIntervalSince(last) < graceSeconds { return true }
+        #endif
+        if graceRemaining != nil { return true }
         let context = LAContext()
         context.localizedCancelTitle = "Cancel"
         var error: NSError?

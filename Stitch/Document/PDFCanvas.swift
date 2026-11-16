@@ -76,6 +76,7 @@ final class StitchPDFView: PDFView {
         outlineChrome.style = .hover
         outlineChrome.isHidden = true
         registerForDraggedTypes([PlaceItem.pasteboardType])
+        delegate = self   // links in the PDF go through `pdfViewWillClick(onLink:with:)`
         selectionChrome.isHidden = true
         NotificationCenter.default.addObserver(self, selector: #selector(geometryChanged), name: .PDFViewScaleChanged, object: self)
         NotificationCenter.default.addObserver(self, selector: #selector(geometryChanged), name: .PDFViewDisplayModeChanged, object: self)
@@ -381,7 +382,7 @@ final class StitchPDFView: PDFView {
             if let info = session.pageInfo(index), let target = session.editTarget(at: pt.applying(info.toDisplay), page: index) {
                 beginEditing(target.block, edit: target.edit, page: index, info: info)
             } else if session.blocks(onPage: index).isEmpty {
-                onMessage?("This page is a scan, so it has no text to edit. Use a text box with a white background to cover and retype.")
+                onMessage?("This page is a scan, so it has no text to edit. Use a text box with a white background to cover and retype: Save Copy removes what's under it.")
             }
         case .select, .place:
             select(nil)
@@ -657,5 +658,45 @@ enum FormBridge {
     /// Values that differ from `baseline`.
     static func changes(_ current: [String: String], from baseline: [String: String]) -> [String: String] {
         current.filter { baseline[$0.key] != $0.value }
+    }
+}
+
+// MARK: links inside the PDF
+
+/// Which links a document may open. A PDF is someone else's file: an invisible link over the whole page
+/// mustn't open a tracker, a `file://` app or another app's URL scheme on your first click.
+enum DocumentLink {
+    enum Decision: Equatable { case ask, refuse }
+
+    static func decision(for url: URL) -> Decision {
+        switch url.scheme?.lowercased() {
+        case "http", "https", "mailto": .ask
+        default: .refuse
+        }
+    }
+}
+
+extension StitchPDFView: PDFViewDelegate {
+    nonisolated func pdfViewWillClick(onLink sender: PDFView, with url: URL) {
+        // PDFKit calls this on the main thread, from the click.
+        MainActor.assumeIsolated { confirmOpening(url) }
+    }
+
+    private func confirmOpening(_ url: URL) {
+        guard DocumentLink.decision(for: url) == .ask else {
+            onMessage?("Stitch doesn't open “\(url.scheme ?? "unknown")” links from documents")
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = "Open this link from the PDF?"
+        alert.informativeText = url.absoluteString
+        alert.addButton(withTitle: "Open")
+        alert.addButton(withTitle: "Cancel")
+        let open = { NSWorkspace.shared.open(url) }
+        if let window {
+            alert.beginSheetModal(for: window) { if $0 == .alertFirstButtonReturn { _ = open() } }
+        } else if alert.runModal() == .alertFirstButtonReturn {
+            _ = open()
+        }
     }
 }

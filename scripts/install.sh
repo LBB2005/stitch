@@ -10,6 +10,11 @@ xcodebuild -scheme Stitch -configuration Release -destination 'platform=macOS' \
 pkill -x Stitch 2>/dev/null || true
 rm -rf /Applications/Stitch.app
 cp -R build/DerivedData/Build/Products/Release/Stitch.app /Applications/
+# The installed copy must run hardened and refuse debugger attach (see docs/audits/SECURITY-AUDIT.md, M1).
+if ! codesign -dvv /Applications/Stitch.app 2>&1 | grep -q 'flags=.*runtime' \
+   || codesign -d --entitlements - /Applications/Stitch.app 2>/dev/null | grep -q get-task-allow; then
+  echo "warning: /Applications/Stitch.app is not hardened (runtime off or get-task-allow present)" >&2
+fi
 # Right after the old copy quits, Launch Services can refuse the first open (-600); try again.
 open /Applications/Stitch.app 2>/dev/null || { sleep 2; open /Applications/Stitch.app; }
 echo "Installed /Applications/Stitch.app"

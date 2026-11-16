@@ -110,24 +110,33 @@ private struct SignatureSettings: View {
     @Environment(SignatureStore.self) private var store
     @State private var editing: Bool?   // nil: closed; false: signature; true: initials
     @State private var error: String?
+    /// Saved signatures are only shown, changed or deleted after Touch ID.
+    @State private var unlocked = false
 
     var body: some View {
         Form {
             if let problem = store.problem { ProblemNote(text: problem) }
             row(title: "Signature", sig: store.signature, initials: false)
             row(title: "Initials", sig: store.initials, initials: true)
+            if !unlocked, store.signature != nil || store.initials != nil {
+                Button("Show With Touch ID") { unlock() }
+            }
             if let error { Text(error).font(.caption).foregroundStyle(.red) }
-            Text("Stored as vector strokes (or typed text) in your login Keychain, only on this Mac. Stitch asks for Touch ID before putting either on a page.")
+            Text("Stored as vector strokes (or typed text) in your login Keychain, only on this Mac. Stitch asks for Touch ID before showing, changing or using either.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
         .formStyle(.grouped)
         .sheet(item: Binding(get: { editing.map(SheetID.init) }, set: { editing = $0?.initials })) { id in
-            SignaturePad(initials: id.initials) { result in
+            SignaturePad(initials: id.initials, suggestedName: unlocked ? store.profile.fullName : nil) { result in
                 if let result { save(result, initials: id.initials) }
                 editing = nil
             }
         }
+    }
+
+    private func unlock() {
+        Task { if await BiometricGate.authorize("show your saved signature") { unlocked = true } }
     }
 
     private func save(_ value: Signature?, initials: Bool) {
@@ -147,11 +156,13 @@ private struct SignatureSettings: View {
     private func row(title: String, sig: Signature?, initials: Bool) -> some View {
         LabeledContent(title) {
             HStack(spacing: 10) {
-                if let sig {
+                if let sig, unlocked {
                     SignaturePreview(signature: sig)
                         .frame(width: 140, height: 44)
                     Button("Change…") { editing = initials }
                     Button("Delete", role: .destructive) { save(nil, initials: initials) }
+                } else if sig != nil {
+                    Label("Saved", systemImage: "lock.fill").foregroundStyle(.secondary)
                 } else {
                     Text("None").foregroundStyle(.secondary)
                     Button("Create…") { editing = initials }

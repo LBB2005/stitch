@@ -7,6 +7,8 @@ struct SignaturePad: View {
     enum Mode: String, CaseIterable { case draw = "Draw", type = "Type" }
 
     let initials: Bool
+    /// Your name from My Info, to start the Type tab with. Only passed after Touch ID.
+    var suggestedName: String? = nil
     let done: (Signature?) -> Void
 
     @State private var mode: Mode = .draw
@@ -33,7 +35,7 @@ struct SignaturePad: View {
             case .type: typeTab
             }
             HStack {
-                Text("Saved only on this Mac, in your Keychain. Touch ID is asked before each use.")
+                Text("Saved only on this Mac, in your Keychain. Touch ID is asked before it's used.")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -49,8 +51,7 @@ struct SignaturePad: View {
         .onAppear {
             canvas.onChange = { hasInk = $0 }
             canvas.onTrackpadEnded = { trackpad = false }
-            if typed.isEmpty {
-                let name = SignatureStore.shared.profile.fullName
+            if typed.isEmpty, let name = suggestedName {
                 typed = initials ? Self.initials(of: name) : name
             }
         }

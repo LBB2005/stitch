@@ -12,6 +12,7 @@
 struct smu_doc {
     fz_context *ctx;
     pdf_document *pdf;
+    int encrypted;   // opened with a password: saved copies keep that password
 };
 
 static void set_err(char *err, int errlen, const char *msg) {
@@ -38,9 +39,11 @@ smu_doc *smu_open(const char *path, const char *password, int *status, char *err
     }
     pdf_document *volatile pdf = NULL;
     volatile int result = SMU_OK;
+    volatile int encrypted = 0;
     fz_try(ctx) {
         pdf = pdf_open_document(ctx, path);
         if (pdf_needs_password(ctx, pdf)) {
+            encrypted = 1;
             if (!password || !pdf_authenticate_password(ctx, pdf, password)) {
                 result = SMU_NEEDS_PASSWORD;
                 set_err(err, errlen, password ? "Wrong password" : "This PDF needs a password");
@@ -58,8 +61,16 @@ smu_doc *smu_open(const char *path, const char *password, int *status, char *err
         return NULL;
     }
     smu_doc *doc = calloc(1, sizeof(smu_doc));
+    if (!doc) {
+        fz_try(ctx) pdf_drop_document(ctx, pdf);
+        fz_catch(ctx) {}
+        fz_drop_context(ctx);
+        set_err(err, errlen, "Out of memory");
+        return NULL;
+    }
     doc->ctx = ctx;
     doc->pdf = pdf;
+    doc->encrypted = encrypted;
     *status = SMU_OK;
     return doc;
 }
@@ -84,7 +95,8 @@ int smu_save(smu_doc *doc, const char *path, char *err, int errlen) {
     pdf_write_options opts = pdf_default_write_options;
     opts.do_garbage = 1;
     opts.do_compress = 1;
-    opts.do_encrypt = PDF_ENCRYPT_NONE;
+    // A password-protected PDF stays protected with the same password; others are written unencrypted.
+    opts.do_encrypt = doc->encrypted ? PDF_ENCRYPT_KEEP : PDF_ENCRYPT_NONE;
     fz_try(ctx) pdf_save_document(ctx, doc->pdf, path, &opts);
     fz_catch(ctx) return caught(ctx, err, errlen);
     return SMU_OK;
@@ -200,7 +212,13 @@ int smu_page_chars(smu_doc *doc, int page, smu_char **chars, int *count, char *e
     return SMU_OK;
 }
 
+int smu_is_encrypted(smu_doc *doc) { return doc->encrypted; }
+
 int smu_remove_text(smu_doc *doc, int page, const float *rects, int rect_count, char *err, int errlen) {
+    return smu_redact(doc, page, rects, rect_count, 0, err, errlen);
+}
+
+int smu_redact(smu_doc *doc, int page, const float *rects, int rect_count, int flags, char *err, int errlen) {
     fz_context *ctx = doc->ctx;
     pdf_page *volatile p = NULL;
     fz_try(ctx) {
@@ -213,8 +231,8 @@ int smu_remove_text(smu_doc *doc, int page, const float *rects, int rect_count, 
         }
         pdf_redact_options opts;
         opts.black_boxes = 0;
-        opts.image_method = PDF_REDACT_IMAGE_NONE;
-        opts.line_art = PDF_REDACT_LINE_ART_NONE;
+        opts.image_method = (flags & SMU_REDACT_IMAGES) ? PDF_REDACT_IMAGE_PIXELS : PDF_REDACT_IMAGE_NONE;
+        opts.line_art = (flags & SMU_REDACT_LINE_ART) ? PDF_REDACT_LINE_ART_REMOVE_IF_COVERED : PDF_REDACT_LINE_ART_NONE;
         opts.text = PDF_REDACT_TEXT_REMOVE;
         pdf_redact_page(ctx, doc->pdf, p, &opts);
     }
@@ -260,6 +278,51 @@ static fz_buffer *string_buffer(fz_context *ctx, const char *s) {
     return buf;
 }
 
+// How the page's own content leaves the graphics state: `q` without a matching `Q`, or a text object left
+// open. A page that leaves either behind would otherwise clip, move or hide a stamp drawn after it.
+typedef struct {
+    pdf_processor super;
+    int depth;
+    int in_text;
+    int final_depth;
+    int final_in_text;
+} depth_counter;
+
+static void dc_q(fz_context *ctx, pdf_processor *p) { ((depth_counter *)p)->depth++; }
+static void dc_Q(fz_context *ctx, pdf_processor *p) {
+    depth_counter *d = (depth_counter *)p;
+    if (d->depth > 0) d->depth--;   // a Q with nothing saved is ignored by viewers
+}
+static void dc_BT(fz_context *ctx, pdf_processor *p) { ((depth_counter *)p)->in_text = 1; }
+static void dc_ET(fz_context *ctx, pdf_processor *p) { ((depth_counter *)p)->in_text = 0; }
+static void dc_EOD(fz_context *ctx, pdf_processor *p) {
+    depth_counter *d = (depth_counter *)p;
+    d->final_depth = d->depth;
+    d->final_in_text = d->in_text;
+}
+
+// Throws on MuPDF errors; the caller is inside fz_try.
+static void unclosed_state(fz_context *ctx, pdf_document *doc, pdf_obj *page, int *depth, int *in_text) {
+    depth_counter *volatile dc = NULL;
+    *depth = 0;
+    *in_text = 0;
+    fz_try(ctx) {
+        dc = pdf_new_processor(ctx, sizeof(depth_counter));
+        dc->super.op_q = dc_q;
+        dc->super.op_Q = dc_Q;
+        dc->super.op_BT = dc_BT;
+        dc->super.op_ET = dc_ET;
+        dc->super.op_EOD = dc_EOD;
+        pdf_process_contents(ctx, &dc->super, doc, pdf_dict_get_inheritable(ctx, page, PDF_NAME(Resources)),
+                             pdf_dict_get(ctx, page, PDF_NAME(Contents)), NULL, NULL);
+        pdf_close_processor(ctx, &dc->super);
+        *depth = dc->final_depth;
+        *in_text = dc->final_in_text;
+    }
+    fz_always(ctx) if (dc) pdf_drop_processor(ctx, (pdf_processor *)dc);
+    fz_catch(ctx) fz_rethrow(ctx);
+}
+
 int smu_place_pdf(smu_doc *doc, int page, const char *stamp_path, const float *m, char *err, int errlen) {
     fz_context *ctx = doc->ctx;
     pdf_document *dst = doc->pdf;
@@ -283,6 +346,9 @@ int smu_place_pdf(smu_doc *doc, int page, const char *stamp_path, const float *m
         xobj = pdf_new_xobject(ctx, dst, bbox, fz_identity, res, content);
 
         pdf_obj *target = pdf_lookup_page_obj(ctx, dst, page);
+        int depth = 0, in_text = 0;
+        fz_try(ctx) unclosed_state(ctx, dst, target, &depth, &in_text);
+        fz_catch(ctx) { depth = 0; in_text = 0; }   // unreadable content: nothing to close
         pdf_obj *resources = pdf_dict_get(ctx, target, PDF_NAME(Resources));
         if (!resources) {
             pdf_obj *inherited = pdf_dict_get_inheritable(ctx, target, PDF_NAME(Resources));
@@ -299,9 +365,13 @@ int smu_place_pdf(smu_doc *doc, int page, const char *stamp_path, const float *m
         pdf_dict_puts(ctx, xobjects, name, xobj);
 
         // Existing content is wrapped in q … Q so whatever state it leaves behind can't move the stamp.
+        // First close what it left open (a text object, unmatched q's), or one Q wouldn't be enough.
         head = string_buffer(ctx, "q\n");
         tail = fz_new_buffer(ctx, 128);
-        fz_append_printf(ctx, tail, "\nQ\nq %g %g %g %g %g %g cm /%s Do Q\n", m[0], m[1], m[2], m[3], m[4], m[5], name);
+        fz_append_string(ctx, tail, "\n");
+        if (in_text) fz_append_string(ctx, tail, "ET\n");
+        for (int i = 0; i < depth; i++) fz_append_string(ctx, tail, "Q\n");
+        fz_append_printf(ctx, tail, "Q\nq %g %g %g %g %g %g cm /%s Do Q\n", m[0], m[1], m[2], m[3], m[4], m[5], name);
         head_ref = pdf_add_stream(ctx, dst, head, NULL, 0);
         tail_ref = pdf_add_stream(ctx, dst, tail, NULL, 0);
         list = pdf_new_array(ctx, dst, 4);

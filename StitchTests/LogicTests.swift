@@ -108,6 +108,9 @@ final class FileKindTests: XCTestCase {
         XCTAssertFalse(FileKind.csv.isOffice, "CSV never needs LibreOffice")
         XCTAssertTrue(FileKind.excel.isOffice)
         XCTAssertNil(kind("a.txt"))
+        XCTAssertNil(kind("layers.psd"), "rare image formats aren't decoded")
+        XCTAssertNil(kind("render.exr"))
+        XCTAssertEqual(kind("shot.webp"), .image(jpeg: false))
         XCTAssertNil(kind("a.zip"))
         XCTAssertNil(kind("noextension"))
     }
