@@ -13,7 +13,11 @@ struct PDFCanvas: NSViewRepresentable {
 /// and click-to-edit for text already in the PDF. PDFKit still does scrolling, zooming, text selection
 /// and form fields.
 final class StitchPDFView: PDFView {
-    enum Tool: Equatable { case select, editText, textBox }
+    enum Tool: Equatable {
+        case select, editText, textBox
+        /// Armed from the Sign or My Info panel: the next click on a page places it.
+        case place(PlaceItem)
+    }
 
     private enum Drag {
         case move(Overlay, start: NSPoint)
@@ -38,6 +42,11 @@ final class StitchPDFView: PDFView {
     var onMessage: ((String) -> Void)?
     /// Asks the window to place a new text box at a page point.
     var onPlaceTextBox: ((Int, CGPoint) -> Void)?
+    /// Asks the window to place an item (dropped, or the armed `place` tool clicked) at a page point.
+    var onPlaceItem: ((PlaceItem, Int, CGPoint) -> Void)?
+    /// For the drop preview: the upright size an item would get, and the spot it would fit into there.
+    var placeSize: ((PlaceItem) -> CGSize?)?
+    var placeTarget: ((PlaceItem, Int, CGPoint) -> CGRect?)?
 
     /// Where the person last clicked on a page, for placing signatures "where you last clicked".
     private(set) var lastClick: (page: Int, point: CGPoint, time: Date)?
@@ -48,6 +57,9 @@ final class StitchPDFView: PDFView {
     private let hoverChrome = SelectionChrome()
     private weak var editor: InlineTextEditor?
     private var editingOverlay: UUID?
+    private let dropChrome = SelectionChrome()
+    private let outlineChrome = SelectionChrome()
+    private var outlined: (rect: CGRect, page: Int)?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -59,6 +71,11 @@ final class StitchPDFView: PDFView {
         displayBox = .cropBox
         hoverChrome.style = .hover
         hoverChrome.isHidden = true
+        dropChrome.style = .hover
+        dropChrome.isHidden = true
+        outlineChrome.style = .hover
+        outlineChrome.isHidden = true
+        registerForDraggedTypes([PlaceItem.pasteboardType])
         selectionChrome.isHidden = true
         NotificationCenter.default.addObserver(self, selector: #selector(geometryChanged), name: .PDFViewScaleChanged, object: self)
         NotificationCenter.default.addObserver(self, selector: #selector(geometryChanged), name: .PDFViewDisplayModeChanged, object: self)
@@ -200,7 +217,7 @@ final class StitchPDFView: PDFView {
 
     func layoutChrome() {
         guard let dv = documentView else { return }
-        for chrome in [selectionChrome, hoverChrome] where chrome.superview !== dv {
+        for chrome in [selectionChrome, hoverChrome, dropChrome, outlineChrome] where chrome.superview !== dv {
             chrome.removeFromSuperview()
             dv.addSubview(chrome)
         }
@@ -212,6 +229,100 @@ final class StitchPDFView: PDFView {
         } else {
             selectionChrome.isHidden = true
         }
+        if let outlined, let r = viewRect(outlined.rect, page: outlined.page), let d = docViewRect(r) {
+            outlineChrome.frame = d.insetBy(dx: -6, dy: -6)
+            outlineChrome.isHidden = false
+        } else {
+            outlineChrome.isHidden = true
+        }
+    }
+
+    /// Outlines a spot (a field, an edited line) while the person hovers its row in a panel.
+    func outline(_ rect: CGRect?, page: Int) {
+        outlined = rect.map { ($0, page) }
+        layoutChrome()
+    }
+
+    /// Rings a spot for a moment: a temporary view over the page, never an annotation, so it can't end
+    /// up in a saved file.
+    func flash(_ rect: CGRect, page: Int) {
+        guard let r = viewRect(rect, page: page), let d = docViewRect(r), let dv = documentView else { return }
+        let ring = RingView(frame: d.insetBy(dx: -8, dy: -8))
+        dv.addSubview(ring)
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.4
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            ring.animator().alphaValue = 1
+        }, completionHandler: {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.1) {
+                NSAnimationContext.runAnimationGroup({ $0.duration = 0.4; ring.animator().alphaValue = 0 },
+                                                     completionHandler: { ring.removeFromSuperview() })
+            }
+        })
+    }
+
+    /// Shows an overlay as it would be, without changing the session (a slider being dragged).
+    func previewOverlay(_ overlay: Overlay) { preview(overlay) }
+
+    var currentPageIndex: Int {
+        guard let doc = document, let page = currentPage else { return 0 }
+        return doc.index(for: page)
+    }
+
+    // MARK: dropping items from the sidebar
+
+    private func dropPoint(_ sender: NSDraggingInfo) -> (page: Int, point: CGPoint)? {
+        let p = convert(sender.draggingLocation, from: nil)
+        guard let doc = document, let page = page(for: p, nearest: true) else { return nil }
+        return (doc.index(for: page), convert(p, to: page))
+    }
+
+    private func updateDrop(_ sender: NSDraggingInfo, _ item: PlaceItem) {
+        guard let (page, point) = dropPoint(sender) else { return dropChrome.isHidden = true }
+        layoutChrome()
+        let rect: CGRect
+        if let target = placeTarget?(item, page, point) {
+            rect = target
+        } else {
+            let upright = placeSize?(item) ?? CGSize(width: 120, height: 30)
+            let rotation = document?.page(at: page)?.rotation ?? 0
+            let size = PageGeometry.userSize(ofUpright: upright, rotation: rotation)
+            rect = CGRect(x: point.x - size.width / 2, y: point.y - size.height / 2, width: size.width, height: size.height)
+        }
+        guard let r = viewRect(rect, page: page), let d = docViewRect(r) else { return }
+        dropChrome.frame = d.insetBy(dx: -4, dy: -4)
+        dropChrome.isHidden = false
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard let item = PlaceItem.from(sender.draggingPasteboard) else { return super.draggingEntered(sender) }
+        updateDrop(sender, item)
+        return .copy
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard let item = PlaceItem.from(sender.draggingPasteboard) else { return super.draggingUpdated(sender) }
+        updateDrop(sender, item)
+        return .copy
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        if let sender, PlaceItem.from(sender.draggingPasteboard) == nil { return super.draggingExited(sender) }
+        dropChrome.isHidden = true
+    }
+
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        PlaceItem.from(sender.draggingPasteboard) != nil || super.prepareForDragOperation(sender)
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard let item = PlaceItem.from(sender.draggingPasteboard) else { return super.performDragOperation(sender) }
+        dropChrome.isHidden = true
+        PlaceItem.dragging = nil
+        guard let (page, point) = dropPoint(sender) else { return false }
+        lastClick = (page, point, Date())
+        onPlaceItem?(item, page, point)
+        return true
     }
 
     private func liveRect(_ id: UUID) -> CGRect? { annotationsByID[id]?.overlay.rect }
@@ -237,6 +348,12 @@ final class StitchPDFView: PDFView {
         let index = doc.index(for: page)
         let pt = convert(p, to: page)
         lastClick = (index, pt, Date())
+        if case .place(let item) = tool {
+            select(nil)
+            tool = .select
+            onPlaceItem?(item, index, pt)
+            return
+        }
 
         if let id = selectedID, let ov = session.overlay(id), let anchor = handle(at: p, for: ov),
            let r = viewRect(ov.rect, page: ov.page) {
@@ -266,7 +383,7 @@ final class StitchPDFView: PDFView {
             } else if session.blocks(onPage: index).isEmpty {
                 onMessage?("This page is a scan, so it has no text to edit. Use a text box with a white background to cover and retype.")
             }
-        case .select:
+        case .select, .place:
             select(nil)
             super.mouseDown(with: event)
         }
@@ -339,6 +456,7 @@ final class StitchPDFView: PDFView {
     override func resetCursorRects() {
         super.resetCursorRects()
         if tool == .textBox { addCursorRect(bounds, cursor: .iBeam) }
+        if case .place = tool { addCursorRect(bounds, cursor: .crosshair) }
     }
 
     // MARK: keyboard
@@ -463,6 +581,27 @@ final class StitchPDFView: PDFView {
     var isEditingText: Bool { editor != nil }
 
     func commitEditing() { editor?.commit() }
+}
+
+/// The ring `flash` draws around a spot.
+private final class RingView: NSView {
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        alphaValue = 0
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 2, dy: 2), xRadius: 6, yRadius: 6)
+        NSColor.controlAccentColor.withAlphaComponent(0.12).setFill()
+        path.fill()
+        path.lineWidth = 2.5
+        NSColor.controlAccentColor.setStroke()
+        path.stroke()
+    }
 }
 
 /// Reads and writes form values on PDFKit's widgets (field name → value; checkboxes "Off" or their

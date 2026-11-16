@@ -1,7 +1,8 @@
 import SwiftUI
 
-/// The document window's content: the PDF, with banners and the text-box format bar above it and the
-/// "Saved …" toast below.
+/// The PDF, with the Edit Text pill above it and the "Saved …" toast below. Notes about the document
+/// live in the To-Do panel, so nothing covers the page. Folded, the rail floats over the leading edge and
+/// the selected text box's format bar floats above the page.
 struct DocumentView: View {
     let controller: DocumentWindowController
     @Environment(DocumentUI.self) private var ui
@@ -11,18 +12,29 @@ struct DocumentView: View {
             .ignoresSafeArea(.container, edges: .top)
             .safeAreaInset(edge: .top, spacing: 0) {
                 VStack(spacing: 6) {
-                    ForEach(ui.banners, id: \.self) { banner in
-                        DocumentBanner(banner: banner) { controller.dismissBanner(banner) }
+                    if let pill = pill {
+                        ToolPill(text: pill) { controller.pdfView.tool = .select }
+                            .transition(.move(edge: .top).combined(with: .opacity))
                     }
-                    if let box = ui.selectedTextBox {
+                    if ui.isFolded, let box = ui.selectedTextBox {
                         TextFormatBar(box: box, controller: controller)
                             .transition(.move(edge: .top).combined(with: .opacity))
                     }
                 }
                 .padding(.horizontal, 12)
-                .padding(.top, ui.banners.isEmpty && ui.selectedTextBox == nil ? 0 : 8)
+                .padding(.top, pill == nil && !(ui.isFolded && ui.selectedTextBox != nil) ? 0 : 8)
                 .animation(.snappy(duration: 0.2), value: ui.selectedTextBox != nil)
+                .animation(.snappy(duration: 0.2), value: pill)
             }
+            .overlay(alignment: .topLeading) {
+                if ui.isFolded {
+                    RailView(controller: controller, floating: true)
+                        .padding(.leading, 12)
+                        .padding(.top, 10)
+                        .transition(.move(edge: .leading).combined(with: .opacity))
+                }
+            }
+            .animation(.snappy(duration: 0.22), value: ui.isFolded)
             .overlay(alignment: .bottom) {
                 if let toast = ui.toast {
                     ToastView(toast: toast)
@@ -38,34 +50,42 @@ struct DocumentView: View {
             }
             .animation(.snappy(duration: 0.25), value: ui.toast)
     }
-}
 
-private struct DocumentBanner: View {
-    let banner: DocumentUI.Banner
-    let dismiss: () -> Void
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: banner.isWarning ? "exclamationmark.triangle.fill" : "info.circle.fill")
-                .foregroundStyle(banner.isWarning ? Color.orange : Color.accentColor)
-            Text(banner.text)
-                .font(.system(size: 12))
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 0)
-            Button(action: dismiss) {
-                Image(systemName: "xmark").font(.system(size: 10, weight: .bold)).foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Dismiss")
+    private var pill: String? {
+        switch ui.tool {
+        case .editText: "Editing text: click any text in the PDF to change it"
+        case .textBox: "Click where the text should go"
+        case .place(let item): "Click the page to place \(item.label == "Date" ? "the date" : item.label)"
+        case .select: nil
         }
-        .padding(10)
-        .frame(maxWidth: 640)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Theme.hairline, lineWidth: 0.5))
     }
 }
 
-/// Size, bold, color and white background for the selected text box.
+/// Says which tool is on, with a Done button (Esc does the same).
+private struct ToolPill: View {
+    let text: String
+    let done: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Circle().fill(Color.accentColor).frame(width: 7, height: 7)
+            Text(text).font(.system(size: 12))
+            // Esc is handled by the PDF view (it also cancels an inline edit first), not here.
+            Button("Done", action: done)
+                .controlSize(.small)
+                .help("Done (esc)")
+        }
+        .padding(.leading, 14)
+        .padding(.trailing, 6)
+        .padding(.vertical, 5)
+        .background(.regularMaterial, in: Capsule())
+        .overlay(Capsule().strokeBorder(Theme.hairline, lineWidth: 0.5))
+        .shadow(color: .black.opacity(0.08), radius: 6, y: 2)
+    }
+}
+
+/// Size, bold, color and white background for the selected text box, floating above the page while
+/// the sidebar is folded (open, they're in the sidebar's selection card).
 private struct TextFormatBar: View {
     let box: TextBox
     let controller: DocumentWindowController

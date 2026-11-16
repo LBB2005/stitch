@@ -1,14 +1,16 @@
 import AppKit
 
-/// The document window's one slim toolbar row (`.unifiedCompact`): zoom, Edit Text, Text, Date, Sign ▾,
-/// My Info ▾, and Save Copy. Shortcuts are in each tooltip and in the Insert menu.
+/// The document window's one slim toolbar row (`.unifiedCompact`), over the PDF beside the sidebar: zoom,
+/// Edit Text, Text, Date, Sign ▾, undo/redo and Save Copy. Shortcuts are in each tooltip and in the menus.
+/// Your details are in the sidebar's My Info panel.
 @MainActor
-final class DocumentToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
+final class DocumentToolbar: NSObject, NSToolbarDelegate {
     let toolbar: NSToolbar
     private weak var controller: DocumentWindowController?
     private var editTextButton: NSButton?
     private var saveButton: NSButton?
-    private let myInfoMenu = NSMenu()
+    private var undoGroup: NSToolbarItemGroup?
+    private var observers: [NSObjectProtocol] = []
 
     private enum ID {
         static let zoom = NSToolbarItem.Identifier("zoom")
@@ -16,7 +18,7 @@ final class DocumentToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
         static let text = NSToolbarItem.Identifier("text")
         static let date = NSToolbarItem.Identifier("date")
         static let sign = NSToolbarItem.Identifier("sign")
-        static let myInfo = NSToolbarItem.Identifier("myInfo")
+        static let undo = NSToolbarItem.Identifier("undo")
         static let save = NSToolbarItem.Identifier("save")
     }
 
@@ -27,15 +29,34 @@ final class DocumentToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
         toolbar.delegate = self
         toolbar.displayMode = .iconOnly
         toolbar.allowsUserCustomization = false
-        myInfoMenu.delegate = self
+        if let undo = controller.session.undoManager as UndoManager? {
+            for name in [Notification.Name.NSUndoManagerDidCloseUndoGroup, .NSUndoManagerDidUndoChange, .NSUndoManagerDidRedoChange] {
+                observers.append(NotificationCenter.default.addObserver(forName: name, object: undo, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.refresh() }
+                })
+            }
+        }
+    }
+
+    func invalidate() {
+        observers.forEach(NotificationCenter.default.removeObserver)
+        observers = []
     }
 
     func refresh() {
         editTextButton?.state = controller?.ui.tool == .editText ? .on : .off
+        let undo = controller?.session.undoManager
+        if let items = undoGroup?.subitems, items.count == 2 {
+            items[0].isEnabled = undo?.canUndo == true
+            items[1].isEnabled = undo?.canRedo == true
+            items[0].toolTip = undo?.canUndo == true ? "\(undo?.undoMenuItemTitle ?? "Undo") (⌘Z)" : "Undo (⌘Z)"
+            items[1].toolTip = undo?.canRedo == true ? "\(undo?.redoMenuItemTitle ?? "Redo") (⇧⌘Z)" : "Redo (⇧⌘Z)"
+        }
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [ID.zoom, .flexibleSpace, ID.editText, ID.text, ID.date, ID.sign, ID.myInfo, .flexibleSpace, ID.save]
+        [.toggleSidebar, .sidebarTrackingSeparator, ID.zoom, .flexibleSpace, ID.editText, ID.text, ID.date, ID.sign,
+         .flexibleSpace, ID.undo, ID.save]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -81,14 +102,17 @@ final class DocumentToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
             item.target = self
             item.action = #selector(signature)
             return item
-        case ID.myInfo:
-            let item = NSMenuToolbarItem(itemIdentifier: id)
-            item.image = symbol("person.text.rectangle")
-            item.label = "My Info"
-            item.toolTip = "Fill in your details (⌥⌘F)"
-            item.menu = myInfoMenu
-            item.showsIndicator = true
-            return item
+        case ID.undo:
+            let group = NSToolbarItemGroup(itemIdentifier: id,
+                                           images: [symbol("arrow.uturn.backward"), symbol("arrow.uturn.forward")],
+                                           selectionMode: .momentary, labels: ["Undo", "Redo"],
+                                           target: self, action: #selector(undoRedo(_:)))
+            group.label = "Undo"
+            group.controlRepresentation = .expanded
+            group.autovalidates = false
+            undoGroup = group
+            DispatchQueue.main.async { [weak self] in self?.refresh() }
+            return group
         case ID.save:
             let button = NSButton(title: "Save Copy", target: self, action: #selector(save))
             button.bezelStyle = .push
@@ -99,45 +123,6 @@ final class DocumentToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
         default:
             return nil
         }
-    }
-
-    // MARK: My Info menu (built when opened, from your saved details)
-
-    func menuNeedsUpdate(_ menu: NSMenu) {
-        menu.removeAllItems()
-        let profile = SignatureStore.shared.profile
-        let addresses = profile.addresses.filter { !$0.isEmpty }
-        if controller?.hasFormFields == true {
-            if addresses.count > 1 {
-                for (i, a) in addresses.enumerated() {
-                    let item = menuItem("Fill Matching Fields (\(a.label))", #selector(fillWithAddress(_:)), key: i == 0 ? "f" : "")
-                    item.tag = i
-                    menu.addItem(item)
-                }
-            } else {
-                menu.addItem(menuItem("Fill Matching Fields", #selector(fill), key: "f"))
-            }
-            menu.addItem(.separator())
-        }
-        if profile.isEmpty {
-            menu.addItem(withTitle: "No details saved yet", action: nil, keyEquivalent: "")
-        } else {
-            let header = NSMenuItem(title: "Insert as Text", action: nil, keyEquivalent: "")
-            header.isEnabled = false
-            menu.addItem(header)
-            for item in ProfileItem.allCases where !item.isAddress && !profile.value(item).isEmpty {
-                let m = menuItem(item.label, #selector(insertItem(_:)))
-                m.representedObject = item.rawValue
-                menu.addItem(m)
-            }
-            for (i, a) in addresses.enumerated() {
-                let m = menuItem(addresses.count > 1 ? "\(a.label) Address" : "Address", #selector(insertAddress(_:)))
-                m.tag = i
-                menu.addItem(m)
-            }
-        }
-        menu.addItem(.separator())
-        menu.addItem(menuItem("Edit My Info…", #selector(editInfo)))
     }
 
     // MARK: actions
@@ -158,25 +143,13 @@ final class DocumentToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
     @objc private func createSignature() { controller?.createSignature(initials: false) }
     @objc private func createInitials() { controller?.createSignature(initials: true) }
     @objc private func save() { controller?.saveCopy() }
-    @objc private func fill() { controller?.fillMatchingFields(address: nil) }
 
-    @objc private func fillWithAddress(_ sender: NSMenuItem) {
-        let addresses = SignatureStore.shared.profile.addresses.filter { !$0.isEmpty }
-        controller?.fillMatchingFields(address: addresses.indices.contains(sender.tag) ? addresses[sender.tag] : nil)
+    @objc private func undoRedo(_ sender: NSToolbarItemGroup) {
+        controller?.pdfView.commitEditing()
+        let undo = controller?.session.undoManager
+        if sender.selectedIndex == 0 { if undo?.canUndo == true { undo?.undo() } } else if undo?.canRedo == true { undo?.redo() }
+        refresh()
     }
-
-    @objc private func insertItem(_ sender: NSMenuItem) {
-        guard let raw = sender.representedObject as? String, let item = ProfileItem(rawValue: raw) else { return }
-        controller?.insertProfileItem(item, address: nil)
-    }
-
-    @objc private func insertAddress(_ sender: NSMenuItem) {
-        let addresses = SignatureStore.shared.profile.addresses.filter { !$0.isEmpty }
-        guard addresses.indices.contains(sender.tag) else { return }
-        controller?.insertProfileItem(.fullAddress, address: addresses[sender.tag])
-    }
-
-    @objc private func editInfo() { SettingsOpener.open(tab: .yourInfo) }
 
     // MARK: helpers
 

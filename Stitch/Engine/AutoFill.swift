@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 /// Matches a form field's name (or its tooltip) to an item of your profile: "First Name", "fname",
@@ -70,5 +71,38 @@ enum AutoFill {
             cleaned = [cleaned[0] + "name"] + cleaned.dropFirst(2)
         }
         return cleaned
+    }
+}
+
+extension AutoFill {
+    /// A text form field, as the My Info panel and Fill My Info see it.
+    struct Field: Equatable, Sendable {
+        var name: String
+        var toolTip: String?
+        var value: String
+        var page: Int
+        /// PDF user space of the page.
+        var rect: CGRect
+    }
+
+    /// A field that one of your details fits.
+    struct FieldMatch: Equatable, Sendable, Identifiable {
+        var field: Field
+        var item: ProfileItem
+        var value: String
+        var alreadyFilled: Bool
+        var id: String { "\(field.page)-\(field.name)-\(Int(field.rect.minX))-\(Int(field.rect.minY))" }
+    }
+
+    /// What Fill My Info will do: each field one of your details matches (and that detail isn't empty),
+    /// and whether the field already has something in it (those are left alone).
+    static func plan(fields: [Field], profile: Profile, address: Profile.Address?) -> [FieldMatch] {
+        fields.compactMap { field in
+            guard let item = match(field.name) ?? field.toolTip.flatMap(match) else { return nil }
+            let value = profile.value(item, address: address)
+            guard !value.isEmpty else { return nil }
+            let filled = !field.value.trimmingCharacters(in: .whitespaces).isEmpty
+            return FieldMatch(field: field, item: item, value: value, alreadyFilled: filled)
+        }
     }
 }

@@ -33,12 +33,41 @@ final class DocumentUI {
         }
     }
 
+    /// What's selected on the page, for the sidebar's selection card.
+    enum Selection: Equatable {
+        case text(TextBox)
+        case signing(Overlay)
+    }
+
     var toast: Toast?
     var banners: [Banner] = []
-    var selectedTextBox: TextBox?
+    var selection: Selection?
     var tool: StitchPDFView.Tool = .select
     var isSaving = false
     var isDirty = false
+
+    // The sidebar (one per window).
+    var panel: SidebarPanel = .pages
+    var isFolded = false
+    var currentPage = 0
+    var todo: [TodoItem] = []
+    /// What Fill My Info would do, for the My Info panel.
+    var fieldMatches: [AutoFill.FieldMatch] = []
+    var addressIndex = 0
+    /// Touch ID passed in this window: the Sign and My Info panels show their contents.
+    var revealed = false
+    var find = FindState()
+    /// Form fields typed into directly (PDFKit's own editing; not undo steps).
+    var typedFields = 0
+    var hasFormFields = false
+
+    var selectedTextBox: TextBox? {
+        if case .text(let box) = selection { return box }
+        return nil
+    }
+
+    var todoLeft: Int { todo.filter { !$0.done }.count }
+    var hasWarning: Bool { banners.contains(where: \.isWarning) }
 }
 
 /// One PDF in a tab: the window, its toolbar, the viewer and the edit session.
@@ -58,6 +87,14 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
     /// Callers waiting on the save in progress (quit, close).
     private var saveWaiters: [(Bool) -> Void] = []
     private var formObserver: NSObjectProtocol?
+    private var pageObserver: NSObjectProtocol?
+    private(set) var split: DocumentSplitController?
+    let thumbnails = PageThumbnails()
+    /// The overlays as the thumbnails last saw them, to redraw only pages that changed.
+    var thumbnailOverlays: [Overlay] = []
+    var findTask: Task<Void, Never>?
+    /// Form fields Fill My Info (or a dropped detail) set, so History doesn't count them as typed.
+    var filledFields: Set<String> = []
 
     init(session: EditSession, prefs: Preferences, documents: DocumentController) {
         self.session = session
@@ -72,7 +109,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
         window.title = session.name
         window.representedURL = session.original
         window.subtitle = session.pageCount == 1 ? "1 page" : "\(session.pageCount) pages"
-        window.minSize = NSSize(width: 520, height: 420)
+        window.minSize = NSSize(width: 600, height: 420)
         window.titlebarSeparatorStyle = .automatic
         super.init(window: window)
         window.delegate = self
@@ -91,7 +128,12 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
         window.toolbar = toolbar.toolbar
         window.toolbarStyle = .unifiedCompact
 
-        window.contentView = NSHostingView(rootView: DocumentView(controller: self).environment(ui))
+        thumbnails.pdfView = pdfView
+        thumbnailOverlays = session.overlays
+        let split = DocumentSplitController(controller: self)
+        self.split = split
+        window.contentViewController = split
+        window.setContentSize(NSSize(width: 1180, height: 1000))
         // Typing in the PDF's own form fields: keep the edited dot current.
         formObserver = NotificationCenter.default.addObserver(forName: NSControl.textDidEndEditingNotification, object: nil,
                                                               queue: .main) { [weak self] note in
@@ -99,10 +141,23 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
             MainActor.assumeIsolated {
                 guard let self, let field, field.window === self.window, field.isDescendant(of: self.pdfView) else { return }
                 self.refreshDirty()
+                self.refreshTodo()
+                self.refreshFieldMatches()
+            }
+        }
+        pageObserver = NotificationCenter.default.addObserver(forName: .PDFViewPageChanged, object: pdfView, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let page = self.pdfView.currentPageIndex
+                if self.ui.currentPage != page { self.ui.currentPage = page }
             }
         }
         if session.flags.contains(.xfa) { ui.banners.append(.xfa) }
         if session.flags.contains(.digitallySigned) { ui.banners.append(.digitallySigned) }
+        ui.hasFormFields = hasFormFields
+        refreshTodo()
+        refreshFieldMatches()
+        ui.panel = ui.todoLeft > 0 || !ui.banners.isEmpty ? .todo : .pages
     }
 
     required init?(coder: NSCoder) { nil }
@@ -113,12 +168,16 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
             pdfView.syncOverlays()
             refreshSelection()
             refreshDirty()
+            overlaysChangedForSidebar()
         }
         session.onWorkingCopyChanged = { [weak self] url, pages in
             guard let self, let doc = PDFDocument(url: url) else { return }
             let form = currentForm()
             pdfView.replacePages(pages, from: doc, form: form)
             refreshDirty()
+            thumbnails.invalidate(pages)
+            refreshTodo()
+            refreshFind()
         }
         session.onError = { [weak self] in self?.showToast("Couldn't apply the edit: \($0)") }
         session.onOverflow = { [weak self] in self?.showToast("The new text is longer and now overlaps other content") }
@@ -127,22 +186,35 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
             self?.ui.tool = tool
             self?.toolbarDelegate?.refresh()
         }
-        pdfView.onMessage = { [weak self] _ in self?.showBanner(.scan) }
+        pdfView.onMessage = { [weak self] message in
+            self?.showBanner(.scan)
+            self?.showToast(message)
+        }
         pdfView.onPlaceTextBox = { [weak self] page, point in self?.placeTextBox(page: page, at: point) }
+        pdfView.onPlaceItem = { [weak self] item, page, point in self?.place(item, page: page, at: point) }
+        pdfView.placeSize = { [weak self] item in self?.naturalSize(of: item) }
+        pdfView.placeTarget = { [weak self] item, page, point in self?.spot(for: item, page: page, at: point) }
     }
 
     private func refreshSelection() {
-        ui.selectedTextBox = pdfView.selectedID.flatMap { session.overlay($0)?.textBox }
+        let selection: DocumentUI.Selection? = pdfView.selectedID.flatMap { session.overlay($0) }.map { ov in
+            if let box = ov.textBox { return .text(box) }
+            return .signing(ov)
+        }
+        if ui.selection != selection { ui.selection = selection }
     }
 
     func refreshDirty() {
-        let dirty = session.hasUnsavedChanges(currentForm: FormBridge.changes(currentForm(), from: baselineForm))
+        let changes = FormBridge.changes(currentForm(), from: baselineForm)
+        let dirty = session.hasUnsavedChanges(currentForm: changes)
+        let typed = Set(changes.keys).subtracting(filledFields).count
+        if ui.typedFields != typed { ui.typedFields = typed }
         ui.isDirty = dirty
         window?.isDocumentEdited = dirty
         documents?.objectWillChangeForCommands()
     }
 
-    private func currentForm() -> [String: String] {
+    func currentForm() -> [String: String] {
         pdfView.document.map(FormBridge.values) ?? [:]
     }
 
@@ -165,6 +237,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
 
     func showBanner(_ banner: DocumentUI.Banner) {
         if !ui.banners.contains(banner) { ui.banners.append(banner) }
+        refreshTodo()
     }
 
     func dismissBanner(_ banner: DocumentUI.Banner) {
@@ -196,7 +269,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
         showToast("Click where the text should go")
     }
 
-    private func placeTextBox(page: Int, at point: CGPoint, text: String = "", select edit: Bool = true) {
+    func placeTextBox(page: Int, at point: CGPoint, text: String = "", select edit: Bool = true) {
         guard let pdfPage = pdfView.document?.page(at: page) else { return }
         var box = TextBox(text: text)
         box.fontSize = 12
@@ -225,8 +298,10 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func insertDate() {
-        insertText(prefs.formattedDate(), actionName: "Date")
+        place(.date)
     }
+
+    var formattedDate: String { prefs.formattedDate() }
 
     func updateSelectedTextBox(_ change: (inout TextBox) -> Void) {
         guard let id = pdfView.selectedID, var ov = session.overlay(id), var box = ov.textBox else { return }
@@ -253,21 +328,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
     // MARK: signing
 
     func placeSignature(initials: Bool) {
-        let store = SignatureStore.shared
-        guard let sig = initials ? store.initials : store.signature else {
-            return createSignature(initials: initials, thenPlace: true)
-        }
-        Task {
-            guard await BiometricGate.authorize(initials ? "use your initials" : "use your signature") else { return }
-            let height: CGFloat = initials ? 28 : 40
-            var size = sig.size(height: height)
-            if size.width > 220 { size = CGSize(width: 220, height: 220 / sig.aspect) }
-            guard let spot = pdfView.placement(upright: size) else { return }
-            let overlay = Overlay(page: spot.page, rect: spot.rect, rotation: spot.rotation,
-                                  kind: initials ? .initials(sig) : .signature(sig))
-            session.add(overlay, actionName: initials ? "Initials" : "Signature")
-            pdfView.select(overlay.id)
-        }
+        place(initials ? .initials : .signature)
     }
 
     func createSignature(initials: Bool, thenPlace: Bool = false) {
@@ -278,6 +339,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
             guard let self, let result else { return }
             do {
                 try SignatureStore.shared.setSignature(result, initials: initials)
+                self.ui.revealed = true
                 if thenPlace { self.placeSignature(initials: initials) }
             } catch {
                 self.showToast("Couldn't save it in the Keychain: \(error.localizedDescription)")
@@ -293,30 +355,19 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
 
     func fillMatchingFields(address: Profile.Address?) {
         Task {
-            guard await BiometricGate.authorize("fill in your details") else { return }
+            guard await reveal("fill in your details") else { return }
             let profile = SignatureStore.shared.profile
             guard !profile.isEmpty else {
                 showToast("Add your details first: Stitch → Settings → Your Info")
                 return
             }
-            guard let doc = pdfView.document else { return }
-            var filled = 0
-            for i in 0..<doc.pageCount {
-                guard let page = doc.page(at: i) else { continue }
-                for a in page.annotations where FormBridge.isWidget(a) && a.widgetFieldType == .text {
-                    guard (a.widgetStringValue ?? "").isEmpty,
-                          let item = a.fieldName.flatMap(AutoFill.match) ?? a.toolTip.flatMap(AutoFill.match) else { continue }
-                    let value = profile.value(item, address: address)
-                    guard !value.isEmpty else { continue }
-                    a.widgetStringValue = value
-                    a.backgroundColor = NSColor.systemYellow.withAlphaComponent(0.25)
-                    filled += 1
-                }
-                pdfView.annotationsChanged(on: page)
-            }
-            pdfView.needsDisplay = true
-            refreshDirty()
-            showToast(filled == 0 ? "No fields matched your info" : "Filled \(filled) field\(filled == 1 ? "" : "s") (highlighted)")
+            let plan = AutoFill.plan(fields: textFields(), profile: profile, address: address).filter { !$0.alreadyFilled }
+            var values: [String: String] = [:]
+            for match in plan where values[match.field.name] == nil { values[match.field.name] = match.value }
+            setFields(values, actionName: "Fill My Info",
+                      summary: "Filled \(values.count) field\(values.count == 1 ? "" : "s") from My Info",
+                      page: plan.count == 1 ? plan.first?.field.page : nil)
+            showToast(values.isEmpty ? "No fields matched your info" : "Filled \(values.count) field\(values.count == 1 ? "" : "s") (highlighted)")
         }
     }
 
@@ -326,12 +377,8 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func insertProfileItem(_ item: ProfileItem, address: Profile.Address?) {
-        Task {
-            guard await BiometricGate.authorize("use your details") else { return }
-            let value = SignatureStore.shared.profile.value(item, address: address)
-            guard !value.isEmpty else { return showToast("\(item.label) is empty in Settings → Your Info") }
-            insertText(value, actionName: item.label)
-        }
+        let addresses = SignatureStore.shared.profile.addresses.filter { !$0.isEmpty }
+        place(.profile(item, address: address.flatMap { a in addresses.firstIndex { $0.id == a.id } }))
     }
 
     // MARK: saving
@@ -382,6 +429,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
             switch result {
             case .success(let outcome):
                 session.didSave(to: outcome.url)
+                filledFields = []
                 baselineAfterSave()
                 documents?.noteRecent(outcome.url)
                 let name = outcome.url.lastPathComponent
@@ -436,15 +484,29 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         session.close()
         if let formObserver { NotificationCenter.default.removeObserver(formObserver) }
+        if let pageObserver { NotificationCenter.default.removeObserver(pageObserver) }
+        findTask?.cancel()
         // The SwiftUI content and toolbar hold this controller; let go of them so the tab is freed.
+        toolbarDelegate?.invalidate()
         window?.toolbar = nil
-        window?.contentView = nil
+        window?.contentViewController = nil
+        split = nil
         pdfView.document = nil
         documents?.windowClosed(self)
     }
 
     func windowDidBecomeKey(_ notification: Notification) {
         documents?.current = self
+    }
+
+    func windowDidResignKey(_ notification: Notification) {
+        // The Sign and My Info panels hide their contents again until the next Touch ID.
+        if BiometricGate.graceSeconds == 0 { ui.revealed = false }
+    }
+
+    func windowDidResize(_ notification: Notification) {
+        guard let window else { return }
+        split?.autoFold(width: window.frame.width)
     }
 
     func windowWillReturnUndoManager(_ window: NSWindow) -> UndoManager? {

@@ -74,6 +74,30 @@ struct StitchCommands: Commands {
             }
             .disabled(doc == nil)
         }
+        CommandGroup(replacing: .sidebar) {
+            Button(doc?.ui.isFolded == true ? "Show Sidebar" : "Hide Sidebar") { documents.current?.toggleSidebar() }
+                .keyboardShortcut("s", modifiers: [.command, .control])
+                .disabled(doc == nil)
+            Menu("Sidebar") {
+                ForEach(SidebarPanel.allCases) { panel in
+                    Button(panel.title) { documents.current?.showPanel(panel) }
+                        .keyboardShortcut(panel.key)
+                }
+            }
+            .disabled(doc == nil)
+            Divider()
+        }
+        CommandGroup(replacing: .textEditing) {
+            Menu("Find") {
+                Button("Find…") { documents.current?.startFind() }
+                    .keyboardShortcut("f")
+                Button("Find Next") { documents.current?.findNext() }
+                    .keyboardShortcut("g")
+                Button("Find Previous") { documents.current?.findPrevious() }
+                    .keyboardShortcut("g", modifiers: [.command, .shift])
+            }
+            .disabled(doc == nil)
+        }
         CommandGroup(after: .toolbar) {
             Button("Zoom In") { documents.current?.zoomIn() }
                 .keyboardShortcut("+")

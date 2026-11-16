@@ -113,7 +113,7 @@ final class DocumentController {
             window.setFrameAutosaveName("StitchDocumentWindow")
             if !window.setFrameUsingName("StitchDocumentWindow") {
                 if let screen = NSScreen.main?.visibleFrame {
-                    let h = min(screen.height - 40, 1100), w = min(h * 0.82, screen.width - 80)
+                    let h = min(screen.height - 40, 1100), w = min(h * 0.82 + DocumentSplitController.preferredWidth, screen.width - 80)
                     window.setFrame(NSRect(x: screen.midX - w / 2, y: screen.midY - h / 2, width: w, height: h), display: false)
                 }
             }

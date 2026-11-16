@@ -4,10 +4,13 @@ import CoreText
 import PDFKit
 
 /// Debug builds only: `-StitchDemo app` shows the Stitch window, `document` opens a sample lease with a
-/// signature, a date and a text box placed, `form` a fillable form, `appsettings` the Settings window.
+/// signature, a date and a text box placed (Pages panel), `document-todo`, `-sign`, `-myinfo`,
+/// `-history`, `-find` and `-folded` the same lease with that panel open or the sidebar folded, `form` a
+/// fillable form, `appsettings` the Settings window.
 @MainActor
 enum DocumentDemo {
-    static let screens: Set<String> = ["app", "document", "form", "appsettings"]
+    static let screens: Set<String> = ["app", "document", "document-todo", "document-sign", "document-myinfo", "document-history",
+                                       "document-find", "document-folded", "form", "appsettings"]
 
     /// `-StitchDemoSnapshot /path.png`: after the demo is up, the frontmost Stitch window draws itself
     /// into that PNG (no Screen Recording permission needed), then Stitch quits.
@@ -16,23 +19,31 @@ enum DocumentDemo {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
             let window = NSApp.keyWindow ?? NSApp.windows.first { $0.isVisible && $0.styleMask.contains(.titled) && $0.level == .normal }
             if let frame = window?.contentView?.superview {
+                // PDFKit draws pages in its own layers, which cacheDisplay skips: paint the visible pages
+                // (with their annotations and the selection chrome) into an image view inside the PDF view
+                // for the moment, so the window draws everything above it (rail, toolbar, bars) as usual.
+                var cover: NSImageView?
+                if let pdf = findPDFView(in: frame) {
+                    let image = pageImage(pdf)
+                    let view = NSImageView(frame: pdf.bounds)
+                    view.image = image
+                    view.imageScaling = .scaleNone
+                    pdf.addSubview(view)
+                    cover = view
+                }
                 frame.layoutSubtreeIfNeeded()
                 if let rep = frame.bitmapImageRepForCachingDisplay(in: frame.bounds) {
                     frame.cacheDisplay(in: frame.bounds, to: rep)
-                    // PDFKit draws pages in its own layers, which cacheDisplay skips: paint those on top.
-                    if let pdf = findPDFView(in: frame), let layer = pdf.layer, let ctx = NSGraphicsContext(bitmapImageRep: rep) {
-                        let r = pdf.convert(pdf.bounds, to: frame)
-                        let scale = CGFloat(rep.pixelsWide) / frame.bounds.width
-                        ctx.cgContext.scaleBy(x: scale, y: scale)
-                        ctx.cgContext.translateBy(x: r.minX, y: r.minY)
-                        layer.render(in: ctx.cgContext)
-                    }
                     try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
                 }
+                cover?.removeFromSuperview()
                 if let pdf = findPDFView(in: frame), let page = pdf.document?.page(at: 0) {
                     let file = NSApp.mainMenu?.item(withTitle: "File")?.submenu?.items
                         .map { "\($0.title)[\($0.keyEquivalentModifierMask.contains(.shift) ? "⇧" : "")\($0.keyEquivalent)]" } ?? []
-                    let info = "file-menu=\(file)\n" + "pages=\(pdf.document?.pageCount ?? -1) scale=\(pdf.scaleFactor) frame=\(pdf.frame) annotations=\(page.annotations.count) text=\(page.string?.prefix(40) ?? "")"
+                    let geo = "frame=\(frame.bounds) flipped=\(frame.isFlipped) pdfInFrame=\(pdf.convert(pdf.bounds, to: frame)) page0=\(pdf.convert(pdf.convert(page.bounds(for: .cropBox), from: page), to: frame)) window=\(frame.window?.frame ?? .zero)\n"
+                    let sidebar = (frame.window?.contentViewController as? NSSplitViewController)?.splitViewItems.first?.viewController.view
+                    let looks = "appearance window=\(frame.window?.effectiveAppearance.name.rawValue ?? "-") sidebar=\(sidebar?.effectiveAppearance.name.rawValue ?? "-") pdf=\(pdf.effectiveAppearance.name.rawValue)\n"
+                    let info = looks + geo + "file-menu=\(file)\n" + "pages=\(pdf.document?.pageCount ?? -1) scale=\(pdf.scaleFactor) frame=\(pdf.frame) annotations=\(page.annotations.count) text=\(page.string?.prefix(40) ?? "")"
                     try? info.write(toFile: path + ".txt", atomically: true, encoding: .utf8)
                     let image = page.thumbnail(of: NSSize(width: 1224, height: 1584), for: .cropBox)
                     if let tiff = image.tiffRepresentation, let r = NSBitmapImageRep(data: tiff) {
@@ -41,6 +52,40 @@ enum DocumentDemo {
                 }
             }
             exit(0)   // not terminate(): the demo document has unsaved changes and would ask
+        }
+    }
+
+    /// The PDF view's visible pages, chrome on top, as an image the size of the view.
+    private static func pageImage(_ pdf: PDFView) -> NSImage {
+        NSImage(size: pdf.bounds.size, flipped: false) { _ in
+            guard let cg = NSGraphicsContext.current?.cgContext, let doc = pdf.document else { return false }
+            cg.setFillColor(NSColor.underPageBackgroundColor.cgColor)
+            cg.fill(pdf.bounds)
+            for i in 0..<doc.pageCount {
+                guard let page = doc.page(at: i) else { continue }
+                let box = page.bounds(for: .cropBox)
+                let r = pdf.convert(box, from: page)
+                guard r.intersects(pdf.bounds) else { continue }
+                cg.saveGState()
+                cg.setFillColor(.white)
+                cg.fill(r)
+                cg.translateBy(x: r.minX, y: r.minY)
+                cg.scaleBy(x: r.width / box.width, y: r.height / box.height)
+                cg.translateBy(x: -box.minX, y: -box.minY)
+                page.draw(with: .cropBox, to: cg)
+                cg.restoreGState()
+            }
+            for sub in pdf.documentView?.subviews ?? [] where !sub.isHidden && sub.alphaValue > 0 && !(sub is NSScrollView) {
+                let r = sub.convert(sub.bounds, to: pdf)
+                guard r.intersects(pdf.bounds) else { continue }
+                NSGraphicsContext.saveGraphicsState()
+                let t = NSAffineTransform()
+                t.translateX(by: r.minX, yBy: r.minY)
+                t.concat()
+                sub.draw(sub.bounds)
+                NSGraphicsContext.restoreGraphicsState()
+            }
+            return true
         }
     }
 
@@ -66,6 +111,7 @@ enum DocumentDemo {
         case "form":
             let url = form(dir)
             documents.open(url)
+            documents.current?.showPanel(.myInfo)
         default:
             let url = lease(dir)
             documents.open(url)
@@ -80,7 +126,38 @@ enum DocumentDemo {
             note.ink = .blue
             let ov = Overlay(page: 0, rect: CGRect(origin: CGPoint(x: 398, y: 618), size: note.naturalSize), rotation: 0, kind: .text(note))
             doc.session.add(ov, actionName: "Text")
-            doc.pdfView.select(ov.id)
+            if let window = doc.window, window.frame.width < 1100 {
+                window.setContentSize(NSSize(width: 1100, height: window.frame.height))
+            }
+            switch screen {
+            case "document-todo":
+                doc.showPanel(.todo)
+            case "document-sign":
+                doc.ui.revealed = true
+                doc.showPanel(.sign)
+            case "document-myinfo":
+                doc.showPanel(.myInfo)
+            case "document-history":
+                doc.showPanel(.history)
+                // Later events, so each is its own undo step.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                    doc.session.add(Overlay(page: 1, rect: CGRect(x: 500, y: 48, width: 40, height: 20), rotation: 0,
+                                            kind: .text(TextBox(text: "LB"))), actionName: "Text")
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { doc.session.undoManager.undo() }
+                }
+            case "document-find":
+                doc.showPanel(.find)
+                doc.ui.find.query = "notice"
+                doc.findChanged()
+            case "document-folded":
+                doc.pdfView.select(ov.id)
+                doc.window?.setContentSize(NSSize(width: 1100, height: doc.window?.frame.height ?? 900))
+                // By hand, once the window is up: the animated path.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { doc.toggleSidebar() }
+            default:
+                doc.showPanel(.pages)
+                doc.pdfView.select(ov.id)
+            }
         }
     }
 
@@ -104,7 +181,23 @@ enum DocumentDemo {
         }
         text("Tenant signature", ctx, CGPoint(x: 72, y: 136), 9, bold: false)
         text("Date", ctx, CGPoint(x: 340, y: 136), 9, bold: false)
+        text("Initials ________", ctx, CGPoint(x: 460, y: 50), 10, bold: false)
         ctx.endPDFPage()
+        for p in 2...3 {
+            ctx.beginPDFPage(nil)
+            text("\(p == 2 ? "Notice and Repairs" : "Ending the Lease")", ctx, CGPoint(x: 72, y: 700), 16, bold: true)
+            let lines = p == 2 ? [
+                "The Landlord will give the Tenant 24 hours' written notice before entering.",
+                "The Tenant will give notice of any repair that is needed as soon as possible.",
+                "Notice may be given by email to the addresses on the first page.",
+            ] : [
+                "Either party may end this lease with 60 days' written notice.",
+                "The deposit is returned within 21 days of the Tenant moving out.",
+            ]
+            for (i, line) in lines.enumerated() { text(line, ctx, CGPoint(x: 72, y: 660 - CGFloat(i) * 18), 11, bold: false) }
+            text("Initials ________", ctx, CGPoint(x: 460, y: 50), 10, bold: false)
+            ctx.endPDFPage()
+        }
         ctx.closePDF()
         return url
     }

@@ -255,7 +255,7 @@ PDFKit keeps doing what it's good at: displaying, scrolling, zooming, selection,
 In order of usefulness; each reuses code that already exists.
 
 1. **Highlights and comments** — PDFKit highlight/note annotations, saved through the same pipeline.
-2. **Page tools** — a page-thumbnail sidebar in the document window (`PDFThumbnailView` + the existing `Arrangement`): drag to reorder, rotate, delete, extract pages to a new PDF, split one PDF into several.
+2. **Page tools** — in the sidebar's Pages panel (`docs/ICON-RAIL-PLAN.md`), as hover buttons and a context menu on each thumbnail, with the existing `Arrangement`: drag to reorder, rotate, delete, extract pages to a new PDF, split one PDF into several.
 3. **Compress** — the existing `PDFShrinker` behind a toolbar button ("Shrink to under 10 MB").
 4. **Convert and protect** — PDF → images (CoreGraphics render), PDF → Word (MuPDF's Word export or LibreOffice, which Stitch already uses), password-protect (PDFKit's user/owner password write options).
 5. **Scanning** — iPhone camera through Continuity Camera ("Import from iPhone → Scan Documents" gives a PDF directly), photos and screenshots through the existing `ImageConverter`, and searchable text through the existing `OCRService`.

@@ -25,7 +25,7 @@ scripts/install.sh                   # Release build → /Applications/Stitch.ap
 open build/DerivedData/Build/Products/Debug/Stitch.app    # run the Debug build
 pkill -x Stitch                      # stop
 scripts/shot.sh <empty|drop|files|arrange|done|settings> [light|dark]   # Debug screenshot → build/shots/
-scripts/winshot.sh <app|document|form|appsettings> [light|dark]        # Debug window draws itself → build/shots/ (no Screen Recording needed)
+scripts/winshot.sh <app|document|document-todo|document-sign|document-myinfo|document-history|document-find|document-folded|form|appsettings> [light|dark]   # Debug window draws itself → build/shots/ (no Screen Recording needed; it can't draw glass or vibrant sidebar text, so check dark sidebars in the app)
 swift scripts/make-icon.swift        # redraw the app icon PNGs
 ```
 
@@ -37,9 +37,10 @@ swift scripts/make-icon.swift        # redraw the app icon PNGs
 - `Stitch/App/` — `AppModel` (all state + actions, `@MainActor @Observable`), `Preferences`, `Services` (notifications, login item), `DemoMode` (Debug only).
 - `Stitch/Panel/` — `PanelController` (status item, drag-onto-icon, panel sizing/dismissal), `MenuBarIcon`.
 - `Stitch/Views/` — one file per panel screen; `Components` holds the shared styles from the mockup; `AppSettingsView` is the Stitch window's Settings (⌘,).
-- `Stitch/Document/` — the Dock app: `DocumentController` (opens PDFs as tabs, recents, `.regular`/`.accessory` switching, quit review), `HomeWindow` (the Stitch window), `DocumentWindowController` + `DocumentToolbar` + `DocumentView` (one tab), `PDFCanvas` (`StitchPDFView`: overlays, Edit Text, inline editors; `FormBridge`), `EditSession` (one PDF's state + undo, single source of truth), `Overlay`/`OverlayAnnotation`, `InlineTextEditor`.
+- `Stitch/Document/` — the Dock app: `DocumentController` (opens PDFs as tabs, recents, `.regular`/`.accessory` switching, quit review), `HomeWindow` (the Stitch window), `DocumentWindowController` + `DocumentToolbar` + `DocumentSplitController` (sidebar + PDF, folding) + `DocumentView` (one tab), `PDFCanvas` (`StitchPDFView`: overlays, Edit Text, inline editors; `FormBridge`), `EditSession` (one PDF's state + undo, single source of truth), `Overlay`/`OverlayAnnotation`, `InlineTextEditor`, `PlaceItem` (what panels drag or click onto a page).
+- `Stitch/Document/Sidebar/` — the document window's icon-rail sidebar (`docs/ICON-RAIL-PLAN.md`): `SidebarView`, `RailView` (also the folded, floating rail), one file per panel (Pages, To-Do, Sign, My Info, History, Find), `SelectionCard`, and `DocumentWindowController+Sidebar` (everything the panels ask of the window, including `place(...)`, the one path for putting anything on a page).
 - `Stitch/Signing/` — `Signature` (vector strokes or typed), `SignatureStore` (Keychain) + `BiometricGate` (Touch ID), `SignaturePad`, `Profile`.
-- `Stitch/Engine/MuPDF/` — `StitchMuPDF.h/.c` (C shim, the only code that calls MuPDF) + `module.modulemap`, `MuPDFDocument.swift` (Swift wrapper). Engine additions: `SaveCopy`, `StampRenderer`, `TextLayout`, `FontMatcher`, `AutoFill`, `PageGeometry`.
+- `Stitch/Engine/MuPDF/` — `StitchMuPDF.h/.c` (C shim, the only code that calls MuPDF) + `module.modulemap`, `MuPDFDocument.swift` (Swift wrapper). Engine additions: `SaveCopy`, `StampRenderer`, `TextLayout`, `FontMatcher`, `AutoFill` (+ `plan`), `PageGeometry`, and for the sidebar `TodoFinder`, `HistoryLog`, `FindReplace` (tested in `SidebarTests`).
 
 ## Notes for Claude
 - Keep secrets in .env; never commit API keys.
@@ -48,6 +49,7 @@ swift scripts/make-icon.swift        # redraw the app icon PNGs
 - Every MuPDF call lives in the C shim inside `fz_try`/`fz_catch`: MuPDF's longjmp must never cross Swift code. Add new MuPDF features as shim functions returning a status + message.
 - PDFKit and MuPDF place things in PDF user space; MuPDF's structured text is in display space (rotated, y down). `MuPDFDocument.PageInfo` converts; `PageGeometry` draws overlays upright on rotated pages.
 - The menu bar panel's behaviour and look stay as they are; new Sign & Edit features go in the Stitch window and document tabs.
+- Document window panels call `DocumentWindowController` methods, never `EditSession` or `StitchPDFView` directly. Every change goes through `EditSession` so History gets an entry; entries carry their `UndoManager` group, so changes made in one event undo together.
 - Pipeline order matters: assemble → OCR → shrink → bookmarks (redrawing drops bookmarks and annotations; `PDFShrinker` restores links).
 - OCR text must be stretched with a font matrix, not the text matrix, or PDFKit reads gaps as spaces.
 - Jobs run in `Task.detached` from `AppModel.run`; engine code checks `Task.checkCancellation()`.

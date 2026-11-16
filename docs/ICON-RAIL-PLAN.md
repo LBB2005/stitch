@@ -5,6 +5,13 @@ Replaces the document window's toolbar-only layout with a sidebar: a 56 pt **rai
 - Exploration (all eight): https://claude.ai/artifact/Q6ar5mVnvmhLFzw1ovwKPD
 - The rail, panel by panel (the design this plan builds): https://claude.ai/artifact/9PCvvzZmKT8MVP9inx5bKg
 
+**Status (2026-11-12): built, Steps 1–9.** Where the build differs from the steps below:
+- Auto-fold is at 860 pt (unfold past 920), not 760/820: the toolbar needs about 600 pt beside a 278 pt sidebar. The sidebar's minimum is 230 pt so the selection card fits.
+- History entries carry their `UndoManager` group; changes made in one event undo (and show as undone) together.
+- History lives on `EditSession` (`session.history`), not `DocumentUI`.
+- Return-to-next in To-Do is left out: Return already commits text boxes and edits on the page.
+- The scan note also shows as a toast, since it comes from a click on the page while another panel may be open.
+
 **How to use this plan:** give Claude Code one step at a time: *"Read docs/ICON-RAIL-PLAN.md and do Step 1 only. Run scripts/test.sh when done."* Every step leaves the app working and ends with a "Done when" check. Steps 2–8 each depend only on Step 1, except where a step says otherwise.
 
 ---
