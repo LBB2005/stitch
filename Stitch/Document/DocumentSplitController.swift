@@ -18,9 +18,24 @@ final class DocumentSplitController: NSSplitViewController {
     var animateIn = false
     private var animatingIn = false
 
-    static let preferredWidth: CGFloat = 278
-    static let foldBelow: CGFloat = 860
-    static let unfoldAbove: CGFloat = 920
+    static let defaultWidth: CGFloat = 278
+    static let minWidth: CGFloat = 240
+    static let maxWidth: CGFloat = 520
+    private static let widthKey = "StitchSidebarWidth"
+    /// The width the person last dragged the sidebar to; every window and tab uses it.
+    static var preferredWidth: CGFloat {
+        get {
+            let saved = UserDefaults.standard.double(forKey: widthKey)
+            return saved > 0 ? min(max(saved, minWidth), maxWidth) : defaultWidth
+        }
+        set { UserDefaults.standard.set(Double(newValue), forKey: widthKey) }
+    }
+    /// How far either side of the 1-pt divider still grabs it.
+    private static let grabSlop: CGFloat = 5
+    private var keyObserver: NSObjectProtocol?
+    /// The toolbar needs about 580 pt beside the sidebar.
+    static var foldBelow: CGFloat { preferredWidth + 582 }
+    static var unfoldAbove: CGFloat { foldBelow + 60 }
 
     init(controller: DocumentWindowController) {
         self.controller = controller
@@ -31,8 +46,8 @@ final class DocumentSplitController: NSSplitViewController {
             .environment(controller.ui).environment(SignatureStore.shared))
         content.sizingOptions = []
         sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebar)
-        sidebarItem.minimumThickness = 230
-        sidebarItem.maximumThickness = 380
+        sidebarItem.minimumThickness = Self.minWidth
+        sidebarItem.maximumThickness = Self.maxWidth
         sidebarItem.canCollapse = true
         sidebarItem.titlebarSeparatorStyle = .none
         contentItem = NSSplitViewItem(viewController: content)
@@ -49,6 +64,15 @@ final class DocumentSplitController: NSSplitViewController {
         if !placedDivider, view.bounds.width >= Self.preferredWidth + contentItem.minimumThickness {
             placedDivider = true
             splitView.setPosition(Self.preferredWidth, ofDividerAt: 0)
+        } else {
+            matchSavedWidth()
+        }
+        // Switching to another tab picks up the width set in the one before.
+        if keyObserver == nil, let window = view.window {
+            keyObserver = NotificationCenter.default.addObserver(
+                forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.matchSavedWidth() }
+            }
         }
         autoFoldReady = true
         if let width = view.window?.frame.width { autoFold(width: width) }
@@ -111,7 +135,7 @@ final class DocumentSplitController: NSSplitViewController {
         setFolded(!sidebarItem.isCollapsed)
     }
 
-    /// Fold under 860 pt (the toolbar needs about 600 pt beside the sidebar), unfold again past 920 pt, unless the person folded it themselves.
+    /// Fold when the toolbar would no longer fit beside the sidebar (860 pt at the default width), unfold again 60 pt wider, unless the person folded it themselves.
     func autoFold(width: CGFloat) {
         guard autoFoldReady else { return }
         if width < Self.foldBelow, !sidebarItem.isCollapsed {
@@ -123,9 +147,38 @@ final class DocumentSplitController: NSSplitViewController {
         }
     }
 
+    override func viewWillDisappear() {
+        super.viewWillDisappear()
+        if let keyObserver { NotificationCenter.default.removeObserver(keyObserver) }
+        keyObserver = nil
+    }
+
+    private var sidebarWidth: CGFloat { sidebarItem.viewController.view.frame.width }
+
+    private func matchSavedWidth() {
+        guard placedDivider, !sidebarItem.isCollapsed, !animatingIn else { return }
+        let want = Self.preferredWidth
+        guard abs(sidebarWidth - want) > 0.5, view.bounds.width >= want + contentItem.minimumThickness else { return }
+        splitView.setPosition(want, ofDividerAt: 0)
+    }
+
     override func splitViewDidResizeSubviews(_ notification: Notification) {
         super.splitViewDidResizeSubviews(notification)
+        // Only a drag of the divider itself is remembered (not window resizing, folding or animations).
+        if NSApp.currentEvent?.type == .leftMouseDragged, view.window?.inLiveResize == false,
+           !animatingIn, !sidebarItem.isCollapsed, sidebarWidth >= Self.minWidth {
+            Self.preferredWidth = sidebarWidth
+        }
         sync()
+    }
+
+    /// A wider grab area than the hairline divider, so it's easy to catch.
+    override func splitView(_ splitView: NSSplitView, effectiveRect proposedEffectiveRect: NSRect,
+                            forDrawnRect drawnRect: NSRect, ofDividerAt dividerIndex: Int) -> NSRect {
+        let rect = super.splitView(splitView, effectiveRect: proposedEffectiveRect, forDrawnRect: drawnRect,
+                                   ofDividerAt: dividerIndex)
+        guard !sidebarItem.isCollapsed else { return rect }
+        return rect.insetBy(dx: -Self.grabSlop, dy: 0)
     }
 
     private func sync(_ folded: Bool? = nil) {
