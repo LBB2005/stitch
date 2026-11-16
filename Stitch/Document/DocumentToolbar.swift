@@ -1,8 +1,8 @@
 import AppKit
 
-/// The document window's one slim toolbar row (`.unifiedCompact`), over the PDF beside the sidebar: zoom,
-/// Edit Text, Text, Date, Sign ▾, undo/redo and Save Copy. Shortcuts are in each tooltip and in the menus.
-/// Your details are in the sidebar's My Info panel.
+/// The document window's one slim toolbar row (`.unifiedCompact`), over the PDF beside the sidebar: the
+/// file name (click to rename), search (⌘K), zoom, Edit Text, Text, Date, Sign ▾, undo/redo and Save Copy.
+/// Shortcuts are in each tooltip and in the menus. Your details are in the sidebar's My Info panel.
 @MainActor
 final class DocumentToolbar: NSObject, NSToolbarDelegate {
     let toolbar: NSToolbar
@@ -10,9 +10,12 @@ final class DocumentToolbar: NSObject, NSToolbarDelegate {
     private var editTextButton: NSButton?
     private var saveButton: NSButton?
     private var undoGroup: NSToolbarItemGroup?
+    private let titleView = TitleView()
     private var observers: [NSObjectProtocol] = []
 
     private enum ID {
+        static let title = NSToolbarItem.Identifier("title")
+        static let search = NSToolbarItem.Identifier("search")
         static let zoom = NSToolbarItem.Identifier("zoom")
         static let editText = NSToolbarItem.Identifier("editText")
         static let text = NSToolbarItem.Identifier("text")
@@ -26,6 +29,8 @@ final class DocumentToolbar: NSObject, NSToolbarDelegate {
         self.controller = controller
         toolbar = NSToolbar(identifier: "StitchDocumentToolbar")
         super.init()
+        titleView.onRename = { [weak controller] name in controller?.rename(to: name) ?? false }
+        refreshTitle()
         toolbar.delegate = self
         toolbar.displayMode = .iconOnly
         toolbar.allowsUserCustomization = false
@@ -43,6 +48,17 @@ final class DocumentToolbar: NSObject, NSToolbarDelegate {
         observers = []
     }
 
+    /// The name and "3 pages · Edited" under it.
+    func refreshTitle() {
+        guard let controller else { return }
+        let pages = controller.session.pageCount == 1 ? "1 page" : "\(controller.session.pageCount) pages"
+        titleView.set(name: controller.session.name, detail: controller.ui.isDirty ? pages + " · Edited" : pages)
+    }
+
+    func beginRename() {
+        titleView.beginEditing()
+    }
+
     func refresh() {
         editTextButton?.state = controller?.ui.tool == .editText ? .on : .off
         let undo = controller?.session.undoManager
@@ -55,8 +71,8 @@ final class DocumentToolbar: NSObject, NSToolbarDelegate {
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.toggleSidebar, .sidebarTrackingSeparator, ID.zoom, .flexibleSpace, ID.editText, ID.text, ID.date, ID.sign,
-         .flexibleSpace, ID.undo, ID.save]
+        [.toggleSidebar, .sidebarTrackingSeparator, ID.title, .flexibleSpace, ID.search, ID.zoom, ID.editText, ID.text,
+         ID.date, ID.sign, ID.undo, ID.save]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -66,6 +82,16 @@ final class DocumentToolbar: NSObject, NSToolbarDelegate {
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier id: NSToolbarItem.Identifier,
                  willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
         switch id {
+        case ID.title:
+            let item = NSToolbarItem(itemIdentifier: id)
+            item.label = "Name"
+            item.view = titleView
+            // Plain text like a window title, not a glass button.
+            item.isBordered = false
+            item.visibilityPriority = .high
+            return item
+        case ID.search:
+            return button(id, "magnifyingglass", "Search", "Search files and actions (⌘K)", #selector(search))
         case ID.zoom:
             let group = NSToolbarItemGroup(itemIdentifier: id,
                                            images: [symbol("minus.magnifyingglass"), symbol("plus.magnifyingglass"),
@@ -135,6 +161,7 @@ final class DocumentToolbar: NSObject, NSToolbarDelegate {
         }
     }
 
+    @objc private func search() { controller?.showSearch() }
     @objc private func editText() { controller?.toggleEditText() }
     @objc private func text() { controller?.startTextBox() }
     @objc private func date() { controller?.insertDate() }

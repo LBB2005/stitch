@@ -26,6 +26,8 @@ struct StitchCommands: Commands {
                 .keyboardShortcut(",")
         }
         CommandGroup(replacing: .newItem) {
+            Button("New Tab") { documents.newTab() }
+                .keyboardShortcut("t")
             Button("Open…") { documents.showOpenPanel() }
                 .keyboardShortcut("o")
             Menu("Open Recent") {
@@ -37,6 +39,10 @@ struct StitchCommands: Commands {
                     Button("Clear Menu") { documents.clearRecents() }
                 }
             }
+            Button("Search…") { documents.showCommandBar() }
+                .keyboardShortcut("k")
+            Button("Merge Files…") { documents.chooseFilesToMerge() }
+            Divider()
             Button("Stitch Window") { documents.showHome() }
                 .keyboardShortcut("1", modifiers: [.command, .shift])
         }
@@ -186,7 +192,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         #endif
         Notifier.shared.install()
-        // Opened by hand (Dock, Applications, Spotlight): show the Stitch window. Opened at login or to
+        // Opened by hand (Dock, Applications, Spotlight): show the empty Stitch window. Opened at login or to
         // open a file: stay in the menu bar.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [self] in
             if !launchedAtLogin, !openedFilesAtLaunch, documents.windows.isEmpty { documents.showHome() }
@@ -202,8 +208,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Clicking Stitch in the Dock or opening it again from Applications.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        let anyWindow = documents.windows.contains { $0.window?.isVisible == true } || documents.home.window?.isVisible == true
-        if !anyWindow { documents.showHome() }
+        if !documents.hasVisibleWindow { documents.showHome() }
         return false
     }
 

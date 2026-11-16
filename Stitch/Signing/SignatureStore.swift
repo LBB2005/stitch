@@ -97,7 +97,18 @@ struct KeychainStore: Sendable {
 @MainActor
 @Observable
 final class SignatureStore {
-    static let shared = SignatureStore()
+    static let shared = SignatureStore(keychain: defaultKeychain)
+
+    /// Debug demo runs (`-StitchDemo`, `scripts/winshot.sh`) use their own empty Keychain entries: the
+    /// Debug build is signed differently, so reading the real ones would stop at a Keychain prompt.
+    private static var defaultKeychain: KeychainStore {
+        #if DEBUG
+        if UserDefaults.standard.string(forKey: "StitchDemo") != nil {
+            return KeychainStore(service: "com.liamblackshawbrown.Stitch.demo")
+        }
+        #endif
+        return KeychainStore()
+    }
 
     private(set) var signature: Signature?
     private(set) var initials: Signature?

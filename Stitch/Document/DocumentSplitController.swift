@@ -14,6 +14,9 @@ final class DocumentSplitController: NSSplitViewController {
     private var placedDivider = false
     /// Auto-fold waits until the window is on screen (building it resizes it a few times).
     private var autoFoldReady = false
+    /// Opened from the empty Stitch window: the sidebar unfolds and the page fades in once it's on screen.
+    var animateIn = false
+    private var animatingIn = false
 
     static let preferredWidth: CGFloat = 278
     static let foldBelow: CGFloat = 860
@@ -49,6 +52,35 @@ final class DocumentSplitController: NSSplitViewController {
         }
         autoFoldReady = true
         if let width = view.window?.frame.width { autoFold(width: width) }
+        if animateIn {
+            animateIn = false
+            if !sidebarItem.isCollapsed { playAnimateIn() }
+        }
+    }
+
+    /// Collapses at once (before anything is drawn), then unfolds to the width it had, with the page
+    /// fading in: the empty window turning into the document.
+    private func playAnimateIn() {
+        animatingIn = true
+        sidebarItem.isCollapsed = true
+        let page = contentItem.viewController.view
+        page.alphaValue = 0
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.32
+                ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                ctx.allowsImplicitAnimation = true
+                self.sidebarItem.animator().isCollapsed = false
+                page.animator().alphaValue = 1
+            } completionHandler: { [weak self] in
+                MainActor.assumeIsolated {
+                    page.alphaValue = 1
+                    self?.animatingIn = false
+                    self?.sync()
+                }
+            }
+        }
     }
 
     var isFolded: Bool { sidebarItem.isCollapsed }
@@ -97,6 +129,8 @@ final class DocumentSplitController: NSSplitViewController {
     }
 
     private func sync(_ folded: Bool? = nil) {
+        // Mid animate-in the sidebar is briefly collapsed; the floating rail shouldn't flash up.
+        guard !animatingIn else { return }
         let value = folded ?? sidebarItem.isCollapsed
         if controller?.ui.isFolded != value { controller?.ui.isFolded = value }
     }

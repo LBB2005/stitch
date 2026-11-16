@@ -491,7 +491,7 @@ final class AppModel {
     }
 
     /// A dropped folder adds the supported files directly inside it, in Finder order.
-    private static func expandingFolders(_ url: URL) -> [URL] {
+    static func expandingFolders(_ url: URL) -> [URL] {
         let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isPackageKey])
         guard values?.isDirectory == true, values?.isPackage != true else { return [url] }
         let contents = (try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil,

@@ -40,6 +40,11 @@ struct RailView: View {
             return nil
         case .history:
             return ui.isDirty ? .dot(.accentColor) : nil
+        case .combine:
+            let job = controller.combine
+            if job.isWorking { return .dot(.accentColor) }
+            if job.phase == .done { return .check }
+            return job.isEmpty ? nil : .count(job.files.count, warning: false)
         default:
             return nil
         }
@@ -55,6 +60,10 @@ struct RailView: View {
             return ui.isDirty ? "Not saved" : nil
         case .find:
             return ui.find.results.isEmpty ? nil : "\(ui.find.results.count) found"
+        case .combine:
+            let job = controller.combine
+            if job.isWorking { return "Working…" }
+            return job.isEmpty ? "Merge or convert files" : job.title
         default:
             return nil
         }
@@ -132,7 +141,7 @@ struct RailButton: View {
 }
 
 /// Liquid Glass on macOS 26; a material capsule before.
-private struct FloatingGlass: ViewModifier {
+struct FloatingGlass: ViewModifier {
     let enabled: Bool
 
     func body(content: Content) -> some View {

@@ -2,7 +2,7 @@ import SwiftUI
 
 /// The sidebar's panels, in rail order.
 enum SidebarPanel: String, CaseIterable, Identifiable {
-    case pages, todo, sign, myInfo, history, find
+    case pages, todo, sign, myInfo, history, find, combine
 
     var id: String { rawValue }
 
@@ -14,6 +14,7 @@ enum SidebarPanel: String, CaseIterable, Identifiable {
         case .myInfo: "My Info"
         case .history: "History"
         case .find: "Find"
+        case .combine: "Combine"
         }
     }
 
@@ -25,10 +26,11 @@ enum SidebarPanel: String, CaseIterable, Identifiable {
         case .myInfo: "person.text.rectangle"
         case .history: "clock.arrow.circlepath"
         case .find: "magnifyingglass"
+        case .combine: "arrow.triangle.merge"
         }
     }
 
-    /// ⌘1…⌘5, ⌘F.
+    /// ⌘1…⌘5, ⌘F, ⌘6.
     var key: KeyEquivalent {
         switch self {
         case .pages: "1"
@@ -37,6 +39,7 @@ enum SidebarPanel: String, CaseIterable, Identifiable {
         case .myInfo: "4"
         case .history: "5"
         case .find: "f"
+        case .combine: "6"
         }
     }
 
@@ -81,6 +84,7 @@ struct SidebarView: View {
         case .myInfo: MyInfoPanel(controller: controller)
         case .history: HistoryPanel(controller: controller)
         case .find: FindPanel(controller: controller)
+        case .combine: CombinePanel(controller: controller, job: controller.combine)
         }
     }
 }

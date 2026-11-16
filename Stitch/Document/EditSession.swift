@@ -4,14 +4,15 @@ import PDFKit
 
 /// One open PDF and everything changed in it: the single source of truth for its document window.
 ///
-/// - `original` is read, never written.
+/// - `original` is read, never written. Its name only changes when the person renames it from the
+///   title (`moved(to:)`); its contents never do.
 /// - The viewer shows a working copy in the document's temp folder: the original plus `textEdits`, applied
 ///   by MuPDF, so what you see is what gets saved. Overlays are drawn on top of it by the viewer.
 /// - Save Copy applies everything to the original afresh and writes a new file (`SaveCopy`).
 @MainActor
 @Observable
 final class EditSession {
-    let original: URL
+    private(set) var original: URL
     let password: String?
     let workDir: URL
     let pageCount: Int
@@ -55,6 +56,11 @@ final class EditSession {
 
     var name: String { original.lastPathComponent }
     var isSigned: Bool { overlays.contains(where: \.isSigning) }
+
+    /// The original was renamed (by the person, from the title). Later rebuilds and saves read it there.
+    func moved(to url: URL) {
+        original = url
+    }
 
     /// Opens `url` for editing. Throws `MuPDFDocument.Failure.needsPassword` / `.wrongPassword`.
     init(original: URL, password: String?) throws {

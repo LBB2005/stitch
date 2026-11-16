@@ -70,7 +70,9 @@ final class DocumentUI {
     var hasWarning: Bool { banners.contains(where: \.isWarning) }
 }
 
-/// One PDF in a tab: the window, its toolbar, the viewer and the edit session.
+/// One PDF in a tab: the window, its toolbar, the viewer and the edit session. Opened from the empty
+/// Stitch window, it takes over that same window (`window:`); closing the last document hands the window
+/// back to the start canvas instead of closing it.
 @MainActor
 final class DocumentWindowController: NSWindowController, NSWindowDelegate {
     static let tabbingID = "StitchDocument"
@@ -78,8 +80,8 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
     let session: EditSession
     let pdfView = StitchPDFView()
     let ui = DocumentUI()
-    private let prefs: Preferences
-    private weak var documents: DocumentController?
+    let prefs: Preferences
+    private(set) weak var documents: DocumentController?
     private var baselineForm: [String: String] = [:]
     private var toolbarDelegate: DocumentToolbar?
     private var toastTask: Task<Void, Never>?
@@ -95,20 +97,25 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
     var findTask: Task<Void, Never>?
     /// Form fields Fill My Info (or a dropped detail) set, so History doesn't count them as typed.
     var filledFields: Set<String> = []
+    /// The Combine panel's merge or convert, made when first used.
+    var combineJob: MergeJob?
 
-    init(session: EditSession, prefs: Preferences, documents: DocumentController) {
+    init(session: EditSession, prefs: Preferences, documents: DocumentController, window existing: NSWindow? = nil) {
         self.session = session
         self.prefs = prefs
         self.documents = documents
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 1000),
-                              styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
-                              backing: .buffered, defer: false)
+        let window = existing ?? NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 1000),
+                                          styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+                                          backing: .buffered, defer: false)
+        let keptFrame = existing?.frame
         window.tabbingMode = .preferred
         window.tabbingIdentifier = Self.tabbingID
         window.isRestorable = false
         window.title = session.name
         window.representedURL = session.original
         window.subtitle = session.pageCount == 1 ? "1 page" : "\(session.pageCount) pages"
+        // The toolbar shows the name itself (click it to rename); tabs and the Window menu still use `title`.
+        window.titleVisibility = .hidden
         window.minSize = NSSize(width: 600, height: 420)
         window.titlebarSeparatorStyle = .automatic
         super.init(window: window)
@@ -131,9 +138,14 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
         thumbnails.pdfView = pdfView
         thumbnailOverlays = session.overlays
         let split = DocumentSplitController(controller: self)
+        split.animateIn = existing != nil
         self.split = split
         window.contentViewController = split
-        window.setContentSize(NSSize(width: 1180, height: 1000))
+        if let keptFrame {
+            window.setFrame(keptFrame, display: false)
+        } else {
+            window.setContentSize(NSSize(width: 1180, height: 1000))
+        }
         // Typing in the PDF's own form fields: keep the edited dot current.
         formObserver = NotificationCenter.default.addObserver(forName: NSControl.textDidEndEditingNotification, object: nil,
                                                               queue: .main) { [weak self] note in
@@ -209,8 +221,10 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
         let dirty = session.hasUnsavedChanges(currentForm: changes)
         let typed = Set(changes.keys).subtracting(filledFields).count
         if ui.typedFields != typed { ui.typedFields = typed }
+        let changed = ui.isDirty != dirty
         ui.isDirty = dirty
         window?.isDocumentEdited = dirty
+        if changed { toolbarDelegate?.refreshTitle() }
         documents?.objectWillChangeForCommands()
     }
 
@@ -447,13 +461,71 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
         refreshDirty()
     }
 
+    // MARK: name, search, tabs
+
+    /// Renames the file itself (from the toolbar title). Its contents are never touched; an existing
+    /// file with that name is never replaced. Returns false (and says why) when it didn't happen.
+    func rename(to typed: String) -> Bool {
+        let old = session.original
+        let ext = old.pathExtension
+        guard let base = FileRename.baseName(typed, extension: ext) else {
+            showToast("A file name needs at least one letter or number")
+            return false
+        }
+        let new = old.deletingLastPathComponent().appendingPathComponent(ext.isEmpty ? base : "\(base).\(ext)")
+        guard new.lastPathComponent != old.lastPathComponent else { return true }
+        let fm = FileManager.default
+        let caseOnly = new.lastPathComponent.lowercased() == old.lastPathComponent.lowercased()
+        if fm.fileExists(atPath: new.path), !caseOnly {
+            showToast("There's already a file named “\(new.lastPathComponent)” in that folder")
+            return false
+        }
+        do {
+            if caseOnly {
+                // Case-insensitive volumes see the new name as the same file: go through a temporary name.
+                let temp = old.deletingLastPathComponent().appendingPathComponent(".stitch-rename-\(UUID().uuidString)")
+                try fm.moveItem(at: old, to: temp)
+                do { try fm.moveItem(at: temp, to: new) } catch {
+                    try? fm.moveItem(at: temp, to: old)
+                    throw error
+                }
+            } else {
+                try fm.moveItem(at: old, to: new)
+            }
+        } catch {
+            showToast("Couldn't rename it: \(error.localizedDescription)")
+            return false
+        }
+        session.moved(to: new)
+        window?.title = new.lastPathComponent
+        window?.representedURL = new
+        toolbarDelegate?.refreshTitle()
+        documents?.renamed(from: old, to: new)
+        showToast("Renamed to \(new.lastPathComponent)", reveal: new)
+        return true
+    }
+
+    /// Puts the toolbar title into rename mode (⌘K → Rename).
+    func beginRename() {
+        toolbarDelegate?.beginRename()
+    }
+
+    func showSearch() {
+        documents?.showCommandBar(over: window)
+    }
+
+    /// The tab bar's + (and ⌘T): a new tab on the start canvas.
+    override func newWindowForTab(_ sender: Any?) {
+        documents?.newTab()
+    }
+
     // MARK: window
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         pdfView.commitEditing()
         captureForm()
         refreshDirty()
-        guard ui.isDirty, !closeConfirmed else { return true }
+        guard ui.isDirty, !closeConfirmed else { return !handBackToStart(sender) }
         let alert = NSAlert()
         alert.messageText = "Save a copy of your changes to “\(session.name)”?"
         alert.informativeText = "The original stays as it is either way."
@@ -482,6 +554,23 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        tearDown()
+    }
+
+    /// The last document closing: the window stays, back on the empty start canvas.
+    private func handBackToStart(_ window: NSWindow) -> Bool {
+        guard let documents, documents.windows.count == 1, documents.windows.first === self,
+              (window.tabbedWindows?.count ?? 1) <= 1 else { return false }
+        tearDown()
+        window.delegate = nil
+        window.isDocumentEdited = false
+        self.window = nil
+        documents.returnToStart(window)
+        return true
+    }
+
+    private func tearDown() {
+        combineJob?.cancel()
         session.close()
         if let formObserver { NotificationCenter.default.removeObserver(formObserver) }
         if let pageObserver { NotificationCenter.default.removeObserver(pageObserver) }
