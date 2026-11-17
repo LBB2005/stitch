@@ -53,6 +53,8 @@ final class StitchPDFView: PDFView {
 
     private var annotationsByID: [UUID: OverlayAnnotation] = [:]
     private var drag: Drag?
+    /// Held strongly here: `PDFView.delegate` is weak.
+    private let linkGuard = LinkGuard()
     private let selectionChrome = SelectionChrome()
     private let hoverChrome = SelectionChrome()
     private weak var editor: InlineTextEditor?
@@ -76,7 +78,9 @@ final class StitchPDFView: PDFView {
         outlineChrome.style = .hover
         outlineChrome.isHidden = true
         registerForDraggedTypes([PlaceItem.pasteboardType])
-        delegate = self   // links in the PDF go through `pdfViewWillClick(onLink:with:)`
+        // Links in the PDF go through `LinkGuard`. Never make the view its own delegate: PDFView forwards
+        // some of its own delegate calls (e.g. scale changes) to its delegate, so that recurses forever.
+        delegate = linkGuard
         selectionChrome.isHidden = true
         NotificationCenter.default.addObserver(self, selector: #selector(geometryChanged), name: .PDFViewScaleChanged, object: self)
         NotificationCenter.default.addObserver(self, selector: #selector(geometryChanged), name: .PDFViewDisplayModeChanged, object: self)
@@ -676,13 +680,17 @@ enum DocumentLink {
     }
 }
 
-extension StitchPDFView: PDFViewDelegate {
+/// The PDF view's delegate: asks before following a link in the document. A separate object, because
+/// PDFView passes some delegate calls to its delegate and a view that is its own delegate loops forever.
+final class LinkGuard: NSObject, PDFViewDelegate {
     nonisolated func pdfViewWillClick(onLink sender: PDFView, with url: URL) {
         // PDFKit calls this on the main thread, from the click.
-        MainActor.assumeIsolated { confirmOpening(url) }
+        MainActor.assumeIsolated { (sender as? StitchPDFView)?.confirmOpening(url) }
     }
+}
 
-    private func confirmOpening(_ url: URL) {
+extension StitchPDFView {
+    fileprivate func confirmOpening(_ url: URL) {
         guard DocumentLink.decision(for: url) == .ask else {
             onMessage?("Stitch doesn't open “\(url.scheme ?? "unknown")” links from documents")
             return

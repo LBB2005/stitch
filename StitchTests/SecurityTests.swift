@@ -21,6 +21,21 @@ final class SecurityTests: XCTestCase {
                                                 [CGPoint(x: 0, y: 20), CGPoint(x: 80, y: 0)]]))
     }
 
+    // L2 regression: the link check once made the PDF view its own delegate. PDFView forwards scale
+    // changes to its delegate, so opening any PDF recursed until the stack overflowed.
+    @MainActor
+    func testPDFViewOpensAndZoomsWithLinkGuardAsDelegate() throws {
+        let view = StitchPDFView(frame: NSRect(x: 0, y: 0, width: 600, height: 800))
+        XCTAssertFalse(view.delegate === view, "the view must never be its own delegate")
+        XCTAssertTrue(view.delegate is LinkGuard)
+        view.autoScales = true
+        view.document = try XCTUnwrap(PDFDocument(url: fx.textPDF("Open.pdf", pages: 2, label: "Open")))
+        view.autoScales = false
+        view.scaleFactor = 2
+        view.zoomIn(nil)
+        XCTAssertEqual(view.document?.pageCount, 2)
+    }
+
     // M2: a password-protected PDF stays protected.
     func testSavedCopyOfPasswordProtectedPDFKeepsThePassword() throws {
         let src = fx.textPDF("Statement.pdf", pages: 1, label: "Statement")
