@@ -9,20 +9,34 @@ enum FileKind: Sendable, Equatable {
     case image(jpeg: Bool)
     case word
     case powerpoint
+    case excel
+    case csv
 
     static let wordExtensions: Set<String> = ["doc", "docx", "docm", "dot", "dotx", "odt", "rtf"]
     static let powerpointExtensions: Set<String> = ["ppt", "pptx", "pptm", "pps", "ppsx", "odp"]
+    static let excelExtensions: Set<String> = ["xls", "xlsx", "xlsm", "xlsb", "xltx", "ods"]
+    static let csvExtensions: Set<String> = ["csv", "tsv", "tab"]
 
-    /// Image types ImageIO can decode on this Mac (HEIC, JPEG, PNG, TIFF, WebP, …).
+    /// Everyday photo and screenshot formats, plus camera RAW. Rarer formats ImageIO also decodes (PSD,
+    /// TGA, OpenEXR, PBM, JPEG 2000…) are left out: less decoder code reachable from a file someone sends you.
+    static let allowedImageTypes: [UTType] = [.jpeg, .png, .heic, .heif, .tiff, .webP, .gif, .bmp,
+                                              UTType("public.avif"), UTType("public.camera-raw-image")].compactMap { $0 }
+
+    /// Of those, the ones ImageIO can decode on this Mac.
     private static let readableImageTypes: Set<String> = {
         let ids = CGImageSourceCopyTypeIdentifiers() as? [String] ?? []
-        return Set(ids)
+        return Set(ids.filter { id in
+            guard let type = UTType(id) else { return false }
+            return allowedImageTypes.contains { type.conforms(to: $0) }
+        })
     }()
 
     static func classify(_ url: URL) -> FileKind? {
         let ext = url.pathExtension.lowercased()
         if wordExtensions.contains(ext) { return .word }
         if powerpointExtensions.contains(ext) { return .powerpoint }
+        if excelExtensions.contains(ext) { return .excel }
+        if csvExtensions.contains(ext) { return .csv }
         guard let type = UTType(filenameExtension: ext) else { return nil }
         if type.conforms(to: .pdf) { return .pdf }
         if type.conforms(to: .image), readableImageTypes.contains(type.identifier) {
@@ -33,12 +47,14 @@ enum FileKind: Sendable, Equatable {
 
     /// Every type the Choose Files… picker offers.
     static var pickerTypes: [UTType] {
-        let office = (wordExtensions.union(powerpointExtensions)).compactMap { UTType(filenameExtension: $0) }
-        return [.pdf, .image] + office
+        let office = wordExtensions.union(powerpointExtensions).union(excelExtensions).union(csvExtensions)
+            .compactMap { UTType(filenameExtension: $0) }
+        return [.pdf] + allowedImageTypes + office
     }
 
     var isImage: Bool { if case .image = self { true } else { false } }
-    var isOffice: Bool { self == .word || self == .powerpoint }
+    /// Needs LibreOffice. CSV doesn't: Stitch draws those tables itself.
+    var isOffice: Bool { self == .word || self == .powerpoint || self == .excel }
     var isPDF: Bool { self == .pdf }
 }
 

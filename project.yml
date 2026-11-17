@@ -22,6 +22,8 @@ targets:
     platform: macOS
     sources:
       - path: Stitch
+        excludes:
+          - "Engine/MuPDF/module.modulemap"
     info:
       path: Stitch/Resources/Info.plist
       properties:
@@ -30,15 +32,41 @@ targets:
         CFBundleVersion: "1"
         LSUIElement: true
         LSApplicationCategoryType: public.app-category.productivity
+        # PDFs can be opened in Stitch (double-click once it's the default, Open With, the Dock). Alternate
+        # rank: Stitch never takes over PDFs until it's chosen in Settings.
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: PDF Document
+            CFBundleTypeRole: Editor
+            LSHandlerRank: Alternate
+            LSItemContentTypes: [com.adobe.pdf]
+        # Finder → right-click → Services → Sign or Edit with Stitch.
+        NSServices:
+          - NSMenuItem: { default: Sign or Edit with Stitch }
+            NSMessage: signOrEditPDF
+            NSPortName: Stitch
+            NSSendFileTypes: [com.adobe.pdf]
         NSHumanReadableCopyright: "© 2026 Liam Blackshaw-Brown"
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.liamblackshawbrown.Stitch
         PRODUCT_NAME: Stitch
         ENABLE_APP_SANDBOX: NO
-        ENABLE_HARDENED_RUNTIME: NO   # not notarized; hardened runtime blocks the test bundle from loading
+        ENABLE_HARDENED_RUNTIME: NO   # Debug: hardened runtime blocks the test bundle from loading
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         COMBINE_HIDPI_IMAGES: YES
+        # MuPDF (vendor/mupdf, built by scripts/build-mupdf.sh) is linked statically, only through the C
+        # shim in Stitch/Engine/MuPDF.
+        HEADER_SEARCH_PATHS: "$(SRCROOT)/vendor/mupdf/include"
+        SWIFT_INCLUDE_PATHS: "$(SRCROOT)/Stitch/Engine/MuPDF"
+        LIBRARY_SEARCH_PATHS: "$(SRCROOT)/build/mupdf/lib"
+        OTHER_LDFLAGS: "-lmupdf -lmupdf-third"
+        ARCHS: arm64   # MuPDF is built for Apple silicon only; Release would otherwise also link x86_64
+      configs:
+        # The installed app: no debugger attach (get-task-allow) and no DYLD_INSERT_LIBRARIES, so other code
+        # running as you can't borrow Stitch's Keychain access to read your signature and details.
+        Release:
+          ENABLE_HARDENED_RUNTIME: YES
+          CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
 
   StitchTests:
     type: bundle.unit-test
@@ -52,6 +80,8 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.liamblackshawbrown.StitchTests
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Stitch.app/Contents/MacOS/Stitch"
         BUNDLE_LOADER: "$(TEST_HOST)"
+        SWIFT_INCLUDE_PATHS: "$(SRCROOT)/Stitch/Engine/MuPDF"
+        HEADER_SEARCH_PATHS: "$(SRCROOT)/vendor/mupdf/include"
         GENERATE_INFOPLIST_FILE: YES
 
 schemes:

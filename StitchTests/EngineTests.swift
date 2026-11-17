@@ -1,3 +1,4 @@
+import CoreText
 import ImageIO
 import PDFKit
 import UniformTypeIdentifiers
@@ -215,7 +216,8 @@ final class PipelineTests: XCTestCase {
         let pdf = fx.textPDF("Lecture 1.pdf", pages: 2, label: "Lecture one")
         let photo = fx.image("IMG_1.HEIC", type: .heic, orientation: 6)
         let doc = fx.url("Notes.docx")
-        try Data("not really a docx".utf8).write(to: doc)
+        // A broken zip: LibreOffice can't load it (plain text would be converted as text).
+        try Data("PK\u{03}\u{04}not really a docx".utf8).write(to: doc)
         let inputs = [pdf, photo, doc]
         let digests = try inputs.map(fx.digest)
         let files = inputs.compactMap(InputFile.load)
@@ -228,7 +230,7 @@ final class PipelineTests: XCTestCase {
         try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
 
         let (prepared, skipped) = try await Pipeline.prepare(files, workDir: work) { _ in }
-        XCTAssertEqual(prepared.count, OfficeConverter.isInstalled ? 2 : 2, "the fake docx can't be converted either way")
+        XCTAssertEqual(prepared.count, 2, "the fake docx can't be converted either way")
         XCTAssertNotNil(skipped[files[2].id])
 
         let pages = files.compactMap { prepared[$0.id] }.flatMap { p in (0..<p.pageCount).map { PageRef(fileID: p.fileID, index: $0) } }
@@ -293,5 +295,172 @@ final class PipelineTests: XCTestCase {
         XCTAssertTrue(PDFDocument(url: pdf)?.string?.contains("Hello") ?? false)
         let siblings = try FileManager.default.contentsOfDirectory(atPath: fx.dir.path)
         XCTAssertFalse(siblings.contains { $0.hasPrefix(".~lock") }, "no lock files next to the original")
+    }
+}
+
+final class CSVConverterTests: XCTestCase {
+    var fx: Fixtures!
+
+    override func setUpWithError() throws { fx = try Fixtures() }
+    override func tearDown() { fx.cleanUp() }
+
+    private func csv(_ name: String, _ text: String, encoding: String.Encoding = .utf8) throws -> URL {
+        let url = fx.url(name)
+        try XCTUnwrap(text.data(using: encoding)).write(to: url)
+        return url
+    }
+
+    private func table(columns: Int, rows: Int, cell: (Int, Int) -> String = { "R\($0)C\($1) value" }) -> CSVConverter.Table {
+        CSVConverter.Table(rows: [(1...columns).map { "Header \($0)" }]
+            + (0..<rows).map { r in (1...columns).map { cell(r + 1, $0) } })
+    }
+
+    func testParseQuotesLineBreaksAndLineEndings() {
+        let text = "name,note\r\n\"Smith, Jo\",\"said \"\"hi\"\"\"\r\nAnn,\"two\nlines\"\rBo,"
+        XCTAssertEqual(CSVConverter.parse(text, delimiter: ","), [
+            ["name", "note"], ["Smith, Jo", "said \"hi\""], ["Ann", "two\nlines"], ["Bo", ""],
+        ])
+    }
+
+    func testDelimiterDetection() {
+        let csv = URL(fileURLWithPath: "/x/a.csv")
+        XCTAssertEqual(CSVConverter.delimiter(for: csv, text: "a,b,c\n1,2,3"), ",")
+        XCTAssertEqual(CSVConverter.delimiter(for: csv, text: "Name;Amount;\"Note, with comma\"\n"), ";")
+        XCTAssertEqual(CSVConverter.delimiter(for: csv, text: "a\tb\n"), "\t")
+        XCTAssertEqual(CSVConverter.delimiter(for: csv, text: "sep=;\na,b;c\n"), ";")
+        XCTAssertEqual(CSVConverter.delimiter(for: csv, text: "single column\n"), ",")
+        XCTAssertEqual(CSVConverter.delimiter(for: URL(fileURLWithPath: "/x/a.tsv"), text: "a,b\n"), "\t")
+    }
+
+    func testDecodeBOMAndWindowsLatin1() throws {
+        XCTAssertEqual(CSVConverter.decode(Data([0xEF, 0xBB, 0xBF]) + Data("café".utf8)), "café")
+        XCTAssertEqual(CSVConverter.decode(try XCTUnwrap("café,€5".data(using: .windowsCP1252))), "café,€5")
+        XCTAssertEqual(CSVConverter.decode(try XCTUnwrap("naïve".data(using: .utf16))), "naïve")
+        XCTAssertNil(CSVConverter.decode(Data([0x50, 0x4B, 0x03, 0x04, 0x00, 0x00])), "binary files are refused")
+    }
+
+    func testCleanDropsSepLineBlankRowsAndEmptyColumns() {
+        let cleaned = CSVConverter.clean([["sep=", ""], ["a", "b", "", ""], [""], ["1"], ["", "", "", ""], ["2", "3", ""]])
+        XCTAssertEqual(cleaned, [["a", "b"], ["1", ""], ["2", "3"]])
+    }
+
+    func testFitKeepsNarrowColumnsAndSharesTheRest() {
+        XCTAssertEqual(CSVConverter.fit([50, 60], into: 500), [50, 60], "already fits")
+        XCTAssertEqual(CSVConverter.fit([50, 400, 400], into: 450), [50, 200, 200])
+        XCTAssertEqual(CSVConverter.fit([100, 400], floors: [80, 60], into: 300), [100, 200],
+                       "room past the floors goes where it's wanted")
+    }
+
+    func testNarrowTableStaysPortraitAtFullSize() {
+        let layout = CSVConverter.layout(table(columns: 3, rows: 10), portrait: CGSize(width: 595, height: 842))
+        XCTAssertFalse(layout.landscape)
+        XCTAssertEqual(layout.fontSize, CSVConverter.fontSize)
+        XCTAssertEqual(layout.pages, [0..<10])
+        XCTAssertEqual(layout.rightAligned, [false, false, false])
+    }
+
+    func testWideTableTurnsLandscapeAndAlwaysFitsTheWidth() {
+        for columns in [12, 25, 80] {
+            let layout = CSVConverter.layout(table(columns: columns, rows: 5), portrait: CGSize(width: 595, height: 842))
+            XCTAssertTrue(layout.landscape, "\(columns) columns")
+            XCTAssertGreaterThanOrEqual(layout.fontSize, CSVConverter.minFontSize)
+            XCTAssertLessThanOrEqual(layout.columnWidths.reduce(0, +), 842 - 2 * CSVConverter.margin + 0.01, "\(columns) columns")
+        }
+    }
+
+    func testWideTableWrapsBetweenWordsNotInsideThem() {
+        let header = ["Respondent"] + (1...16).map { "Q\($0): How satisfied were you with item \($0)?" }
+        let body = (1...5).map { r in ["P\(r)"] + (1...16).map { ["Very", "Somewhat", "Not at all"][($0 + r) % 3] } }
+        let layout = CSVConverter.layout(CSVConverter.Table(rows: [header] + body), portrait: CGSize(width: 595, height: 842))
+        let font = CTFontCreateUIFontForLanguage(.system, layout.fontSize, nil)!
+        let word = CTLineGetTypographicBounds(CTLineCreateWithAttributedString(NSAttributedString(
+            string: "Somewhat", attributes: [NSAttributedString.Key(kCTFontAttributeName as String): font])), nil, nil, nil)
+        for w in layout.columnWidths.dropFirst() {
+            XCTAssertGreaterThan(w - 2 * layout.padX, word, "\"Somewhat\" fits on one line")
+        }
+        XCTAssertLessThanOrEqual(layout.columnWidths.reduce(0, +), 842 - 2 * CSVConverter.margin + 0.01)
+    }
+
+    func testLongTableRunsOntoMorePagesWithEveryRowOnce() {
+        let layout = CSVConverter.layout(table(columns: 4, rows: 500), portrait: CGSize(width: 595, height: 842))
+        XCTAssertGreaterThan(layout.pages.count, 5)
+        XCTAssertEqual(layout.pages.flatMap { Array($0) }, Array(0..<500))
+    }
+
+    func testNumericColumnsAreRightAligned() {
+        let t = CSVConverter.Table(rows: [["Item", "Price", "Change", "Date"], ["Tea", "$4.50", "-2%", "2026-10-02"],
+                                          ["Cake", "12", "(3.1)", "2026-10-03"], ["Pie", "1,200.00", "n/a", "2026-10-04"]])
+        XCTAssertEqual(CSVConverter.layout(t).rightAligned, [false, true, false, false], "dates stay left-aligned")
+    }
+
+    func testWritesReadableTableWithHeaderOnEveryPage() throws {
+        var text = "Student,Score,Comment\n"
+        for n in 1...300 { text += "Student \(n),\(n % 100),\"Good, steady work\"\n" }
+        let src = try csv("Grades.csv", text)
+        let before = try fx.digest(src)
+        let out = fx.url("grades.pdf")
+        try CSVConverter.writePDF(from: src, to: out)
+
+        let doc = try XCTUnwrap(PDFDocument(url: out))
+        XCTAssertGreaterThan(doc.pageCount, 1)
+        for p in [0, doc.pageCount - 1] {
+            XCTAssertTrue(doc.page(at: p)?.string?.contains("Comment") ?? false, "header on page \(p + 1)")
+        }
+        let all = doc.string ?? ""
+        XCTAssertTrue(all.contains("Student 300"))
+        XCTAssertTrue(all.contains("Good, steady work"))
+        XCTAssertEqual(try fx.digest(src), before, "original untouched")
+    }
+
+    func testEmptyCSVIsRefused() throws {
+        let src = try csv("empty.csv", "\n\n,,\n")
+        XCTAssertThrowsError(try CSVConverter.writePDF(from: src, to: fx.url("e.pdf")))
+    }
+
+    func testMergeCSVWithPDF() async throws {
+        let pdf = fx.textPDF("Report.pdf", pages: 1, label: "Report")
+        let src = try csv("Data.csv", "a;b\n1;2\n")
+        let files = [pdf, src].compactMap(InputFile.load)
+        XCTAssertEqual(files.map(\.kind), [.pdf, .csv])
+        let (prepared, skipped) = try await Pipeline.prepare(files, workDir: fx.dir) { _ in }
+        XCTAssertTrue(skipped.isEmpty)
+        XCTAssertEqual(prepared[files[1].id]?.pageCount, 1)
+        XCTAssertEqual(prepared[files[1].id]?.title, "Data")
+    }
+
+    func testExcelSheetsFitOnePageWideWhenInstalled() async throws {
+        try XCTSkipUnless(OfficeConverter.isInstalled, "LibreOffice isn't installed")
+        var text = (1...25).map { "Column header \($0)" }.joined(separator: ",") + "\n"
+        for r in 1...40 { text += (1...25).map { "R\(r)C\($0) value" }.joined(separator: ",") + "\n" }
+        let wide = try csv("Wide.csv", text)
+        let xlsx = try await toXLSX(wide)
+        let before = try fx.digest(xlsx)
+
+        let plainURL = try await OfficeConverter.convert(xlsx, workDir: fx.dir)
+        let fittedURL = try await OfficeConverter.convert(xlsx, workDir: fx.dir, fitSheetsToWidth: true)
+        let plain = try XCTUnwrap(PDFDocument(url: plainURL))
+        let fitted = try XCTUnwrap(PDFDocument(url: fittedURL))
+        XCTAssertGreaterThan(plain.pageCount, 1, "without fitting, columns spill onto extra pages")
+        XCTAssertEqual(fitted.pageCount, 1)
+        let box = try XCTUnwrap(fitted.page(at: 0)).bounds(for: .mediaBox)
+        XCTAssertGreaterThan(box.width, box.height, "wide sheets turn landscape")
+        XCTAssertTrue(fitted.string?.contains("Column header 25") ?? false)
+        XCTAssertEqual(try fx.digest(xlsx), before, "original untouched")
+    }
+
+    /// Uses LibreOffice to save a CSV as a real .xlsx workbook.
+    private func toXLSX(_ csv: URL) async throws -> URL {
+        let process = Process()
+        process.executableURL = try XCTUnwrap(OfficeConverter.sofficeURL)
+        let profile = fx.dir.appendingPathComponent("profile", isDirectory: true)
+        process.arguments = ["-env:UserInstallation=\(profile.absoluteString)", "--headless", "--norestore",
+                             "--convert-to", "xlsx", "--outdir", fx.dir.path, csv.path]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+        let out = csv.deletingPathExtension().appendingPathExtension("xlsx")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: out.path))
+        return out
     }
 }

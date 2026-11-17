@@ -136,3 +136,44 @@ final class Fixtures {
         return ctx.makeImage()!
     }
 }
+
+// MARK: Sign & Edit fixtures
+
+extension Fixtures {
+    /// One page with three text lines and a photo-like image below them.
+    func textAndImagePDF(_ name: String) -> URL {
+        let url = url(name)
+        var box = CGRect(x: 0, y: 0, width: 612, height: 792)
+        let ctx = CGContext(url as CFURL, mediaBox: &box, nil)!
+        ctx.beginPDFPage(nil)
+        draw("Alpha page 1", in: ctx, at: CGPoint(x: 72, y: 700), size: 24)
+        draw("The quick brown fox", in: ctx, at: CGPoint(x: 72, y: 640), size: 14)
+        draw("Keep this line", in: ctx, at: CGPoint(x: 72, y: 600), size: 14)
+        ctx.draw(noise(width: 300, height: 200), in: CGRect(x: 72, y: 300, width: 300, height: 200))
+        ctx.endPDFPage()
+        ctx.closePDF()
+        return url
+    }
+
+    /// A one-page form: text fields "First Name", "Email", "Student ID" and a checkbox "Agree".
+    func formPDF(_ name: String) -> URL {
+        let blank = textPDF("blank-\(UUID().uuidString).pdf", pages: 1, label: "Application")
+        let doc = PDFDocument(url: blank)!
+        let page = doc.page(at: 0)!
+        for (i, field) in ["First Name", "Email", "Student ID"].enumerated() {
+            let w = PDFAnnotation(bounds: CGRect(x: 72, y: 600 - CGFloat(i) * 40, width: 240, height: 22), forType: .widget, withProperties: nil)
+            w.widgetFieldType = .text
+            w.fieldName = field
+            w.font = NSFont.systemFont(ofSize: 12)
+            page.addAnnotation(w)
+        }
+        let box = PDFAnnotation(bounds: CGRect(x: 72, y: 460, width: 18, height: 18), forType: .widget, withProperties: nil)
+        box.widgetFieldType = .button
+        box.widgetControlType = .checkBoxControl
+        box.fieldName = "Agree"
+        page.addAnnotation(box)
+        let out = url(name)
+        XCTAssertTrue(doc.write(to: out))
+        return out
+    }
+}

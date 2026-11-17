@@ -66,7 +66,7 @@ final class AppModel {
     var destinationName: String { FileManager.default.displayName(atPath: destination.path) }
 
     var canMerge: Bool {
-        files.contains { $0.kind.isPDF || $0.kind.isImage || ($0.kind.isOffice && OfficeConverter.isInstalled) }
+        files.contains { $0.kind.isPDF || $0.kind.isImage || $0.kind == .csv || ($0.kind.isOffice && OfficeConverter.isInstalled) }
     }
     var canConvertToJPEG: Bool { files.contains { $0.kind == .image(jpeg: false) } }
     var canConvertToPDF: Bool { files.contains(where: \.kind.isImage) }
@@ -201,7 +201,7 @@ final class AppModel {
             open.canChooseDirectories = false
             open.allowedContentTypes = FileKind.pickerTypes
             open.prompt = "Add"
-            open.message = "Choose PDFs, photos, Word or PowerPoint files"
+            open.message = "Choose PDFs, photos, Word, PowerPoint, Excel or CSV files"
             return open.runModal() == .OK ? open.urls : []
         } ?? []
         add(urls)
@@ -491,7 +491,7 @@ final class AppModel {
     }
 
     /// A dropped folder adds the supported files directly inside it, in Finder order.
-    private static func expandingFolders(_ url: URL) -> [URL] {
+    static func expandingFolders(_ url: URL) -> [URL] {
         let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isPackageKey])
         guard values?.isDirectory == true, values?.isPackage != true else { return [url] }
         let contents = (try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil,

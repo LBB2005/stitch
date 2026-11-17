@@ -19,6 +19,10 @@ final class PanelController: NSObject, NSWindowDelegate, NSDraggingDestination {
     private var eventMonitors: [Any] = []
     private var observers: [NSObjectProtocol] = []
 
+    /// Right-click menu: open the Stitch window / a PDF to sign or edit (set by the app delegate).
+    var onOpenApp: (() -> Void)?
+    var onOpenPDF: (() -> Void)?
+
     /// Set while the finished file is being dragged out, so the panel stays open.
     var isDraggingOut = false
     private var isRunningModal = false
@@ -64,6 +68,9 @@ final class PanelController: NSObject, NSWindowDelegate, NSDraggingDestination {
 
     private func showContextMenu() {
         let menu = NSMenu()
+        menu.addItem(withTitle: "Open Stitch Window", action: #selector(openAppFromMenu), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "Open PDF to Sign or Edit…", action: #selector(openPDFFromMenu), keyEquivalent: "o").target = self
+        menu.addItem(.separator())
         menu.addItem(withTitle: "Settings…", action: #selector(openSettingsFromMenu), keyEquivalent: ",").target = self
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit Stitch", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
@@ -71,6 +78,9 @@ final class PanelController: NSObject, NSWindowDelegate, NSDraggingDestination {
         statusItem?.button?.performClick(nil)
         statusItem?.menu = nil
     }
+
+    @objc private func openAppFromMenu() { onOpenApp?() }
+    @objc private func openPDFFromMenu() { onOpenPDF?() }
 
     @objc private func openSettingsFromMenu() {
         open()
